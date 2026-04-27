@@ -65,13 +65,20 @@ from storage.runs import Run, append_run, get_run, new_run_id
 app = FastAPI(title="audio-trial-backend", version="0.1.0")
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
+PUBLIC_ORIGIN = os.environ.get("PUBLIC_ORIGIN", "")
+allow_origins = [FRONTEND_ORIGIN, "http://localhost:3000", "http://localhost:5173"]
+if PUBLIC_ORIGIN:
+    allow_origins.append(PUBLIC_ORIGIN)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_ORIGIN, "http://localhost:3000"],
+    allow_origins=list(dict.fromkeys(allow_origins)),  # dedupe, keep order
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Static frontend mount happens at the END of this file so it does NOT
+# shadow /api/* and /ws/* routes — Starlette matches routes in order.
 
 # In-memory map of run_id → WebSocket (only one socket per run in Slice 0)
 _ws_connections: Dict[str, WebSocket] = {}
@@ -333,3 +340,16 @@ async def ws_run(websocket: WebSocket, run_id: str):
         pass
     finally:
         _ws_connections.pop(run_id, None)
+
+
+# ─── Static frontend mount (production, MUST be last) ────────────────────────
+# In docker-compose deploys the multi-stage Dockerfile bakes
+# frontend/dist into /app/frontend_dist. When that directory exists we
+# mount it on / so the SPA and the API share an origin (Caddy forwards
+# everything to one backend). In dev (pnpm dev on :5173) the directory
+# is absent and this is a no-op.
+_FRONTEND_DIST = Path(os.environ.get("FRONTEND_DIST", "/app/frontend_dist"))
+if _FRONTEND_DIST.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True),
+              name="frontend")

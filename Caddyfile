@@ -1,0 +1,41 @@
+# Caddy reverse proxy for the audio-trial app.
+#
+# Reads PUBLIC_HOST and LETSENCRYPT_EMAIL from the environment (see
+# docker-compose.yml).  Auto-provisions TLS via Let's Encrypt.
+#
+# Same-origin SPA + API: caddy forwards EVERYTHING to trial-app:8000;
+# the FastAPI backend serves /api/*, /ws/*, and the built frontend on /.
+# This means there is no CORS dance in production — the browser only
+# ever talks to one origin.
+
+{
+    # Global options
+    email {$LETSENCRYPT_EMAIL}
+}
+
+{$PUBLIC_HOST} {
+    encode zstd gzip
+
+    # WebSocket upgrade for /ws/* (FastAPI WebSocket runner).
+    @ws {
+        path /ws/*
+        header Connection *Upgrade*
+        header Upgrade websocket
+    }
+    reverse_proxy @ws trial-app:8000
+
+    # Everything else (HTTP API + SPA static).
+    reverse_proxy trial-app:8000
+
+    # Sensible defaults
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+        # Strict-Transport-Security max-age=31536000  # uncomment after your domain is stable
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

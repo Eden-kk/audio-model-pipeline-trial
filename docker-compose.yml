@@ -1,0 +1,88 @@
+# Audio-model trial app — production stack on the AMD-ROCm remote machine.
+#
+# Three services on one bridge network:
+#   trial-app    — FastAPI backend + built static frontend (port 8000 internal)
+#   model-server — NeMo ASR on AMD GPU (port 9100 internal)
+#   caddy        — reverse proxy + auto-TLS (ports 80/443 public)
+#
+# The user visits ONE URL: https://${PUBLIC_HOST}.  Caddy terminates TLS
+# and forwards everything to trial-app, which serves the SPA and the API
+# from the same origin.  trial-app reaches model-server on the docker
+# network at http://model-server:9100.
+#
+# See docs/AMD-DEPLOY.md for the full setup walkthrough.
+
+services:
+  trial-app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        # Multi-stage build also produces frontend/dist and copies it into
+        # the image so the FastAPI app can mount it on /.
+        VITE_API_URL: ""  # same origin in production
+    image: audio-trial-app:latest
+    container_name: trial-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MODEL_SERVER_URL: http://model-server:9100
+      DATA_DIR: /app/data
+      FRONTEND_ORIGIN: ${PUBLIC_ORIGIN:-https://${PUBLIC_HOST}}
+    volumes:
+      - trial-data:/app/data
+    networks:
+      - trial-net
+    depends_on:
+      - model-server
+
+  model-server:
+    build:
+      context: ./model-server
+      args:
+        HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
+    image: trial-model-server:latest
+    container_name: model-server
+    restart: unless-stopped
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_PTRACE
+    volumes:
+      - models:/models
+    networks:
+      - trial-net
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+    networks:
+      - trial-net
+    depends_on:
+      - trial-app
+
+networks:
+  trial-net:
+    driver: bridge
+
+volumes:
+  trial-data:    # uploaded clips + JSONL run results (host-persistent)
+  models:        # HF + NeMo cache (model weights survive image rebuilds)
+  caddy-data:    # ACME certs
+  caddy-config:
