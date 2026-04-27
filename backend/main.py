@@ -33,9 +33,17 @@ load_dotenv()  # load backend/.env if present
 from adapters.base import registry
 from adapters.deepgram_adapter import DeepgramAdapter
 from adapters.faster_whisper_adapter import FasterWhisperAdapter
+from adapters.gladia_adapter import GladiaAdapter
+from adapters.assemblyai_adapter import AssemblyAIAdapter
+from adapters.speechmatics_adapter import SpeechmaticsAdapter
+from adapters.groq_whisper_adapter import GroqWhisperAdapter
 
 registry.register(DeepgramAdapter())
 registry.register(FasterWhisperAdapter())
+registry.register(GladiaAdapter())
+registry.register(AssemblyAIAdapter())
+registry.register(SpeechmaticsAdapter())
+registry.register(GroqWhisperAdapter())
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 from storage.clips import Clip, audio_path, get_clip, list_clips, new_clip_id, save_clip
