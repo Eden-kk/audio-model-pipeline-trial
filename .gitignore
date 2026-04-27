@@ -42,3 +42,6 @@ runs/
 # logs
 *.log
 logs/
+
+# Backend local data (clips and run logs — not committed)
+backend/data/
