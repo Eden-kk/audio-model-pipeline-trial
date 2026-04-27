@@ -1,0 +1,21 @@
+# model-server requirements.
+# Minimal, pinned. NeMo on ROCm uses the beecave-homelab community fork
+# until upstream Nvidia NeMo officially supports AMD GPUs.
+#
+# CPU-only fallback: works for development without a GPU; pyannote/NeMo
+# automatically falls back to CPU when ROCm is not present. Quality the
+# same; speed degrades.
+
+fastapi[standard]==0.115.4
+uvicorn[standard]==0.32.0
+python-multipart
+soundfile
+numpy<2
+httpx
+pydantic>=2.0
+
+# NeMo ASR — community ROCm fork pinned at the working commit.
+# Switch to upstream nemo_toolkit[asr]==2.x when AMD support lands officially.
+nemo_toolkit[asr]==2.0.0
+pyarrow==15.0.2
+huggingface_hub>=0.24,<1.0
