@@ -30,32 +30,42 @@ from pydantic import BaseModel
 load_dotenv()  # load backend/.env if present
 
 # ─── Adapter registry ─────────────────────────────────────────────────────────
-from adapters.base import registry
-from adapters.deepgram_adapter import DeepgramAdapter
-from adapters.faster_whisper_adapter import FasterWhisperAdapter
-from adapters.gladia_adapter import GladiaAdapter
-from adapters.assemblyai_adapter import AssemblyAIAdapter
-from adapters.speechmatics_adapter import SpeechmaticsAdapter
-from adapters.groq_whisper_adapter import GroqWhisperAdapter
-from adapters.cartesia_tts_adapter import CartesiaTTSAdapter
-from adapters.resemblyzer_adapter import ResemblyzerAdapter
-from adapters.pyannote_verify_adapter import PyannoteVerifyAdapter
-from adapters.parakeet_adapter import ParakeetAdapter
-from adapters.canary_1b_flash_adapter import Canary1BFlashAdapter
-from adapters.canary_qwen_25b_adapter import CanaryQwen25BAdapter
+# Each adapter module is imported defensively: if its heavy deps aren't
+# installed (e.g. resemblyzer requires Python <3.12 because of numba),
+# we log and skip rather than crashing the whole backend. The user can
+# still exercise the adapters whose deps DID install.
 
-registry.register(DeepgramAdapter())
-registry.register(FasterWhisperAdapter())
-registry.register(GladiaAdapter())
-registry.register(AssemblyAIAdapter())
-registry.register(SpeechmaticsAdapter())
-registry.register(GroqWhisperAdapter())
-registry.register(CartesiaTTSAdapter())
-registry.register(ResemblyzerAdapter())
-registry.register(PyannoteVerifyAdapter())
-registry.register(ParakeetAdapter())
-registry.register(Canary1BFlashAdapter())
-registry.register(CanaryQwen25BAdapter())
+import logging
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("trial-app")
+
+from adapters.base import registry
+
+_ADAPTERS = [
+    ("adapters.deepgram_adapter", "DeepgramAdapter"),
+    ("adapters.faster_whisper_adapter", "FasterWhisperAdapter"),
+    ("adapters.gladia_adapter", "GladiaAdapter"),
+    ("adapters.assemblyai_adapter", "AssemblyAIAdapter"),
+    ("adapters.speechmatics_adapter", "SpeechmaticsAdapter"),
+    ("adapters.groq_whisper_adapter", "GroqWhisperAdapter"),
+    ("adapters.cartesia_tts_adapter", "CartesiaTTSAdapter"),
+    ("adapters.resemblyzer_adapter", "ResemblyzerAdapter"),
+    ("adapters.pyannote_verify_adapter", "PyannoteVerifyAdapter"),
+    ("adapters.parakeet_adapter", "ParakeetAdapter"),
+    ("adapters.canary_1b_flash_adapter", "Canary1BFlashAdapter"),
+    ("adapters.canary_qwen_25b_adapter", "CanaryQwen25BAdapter"),
+]
+
+for mod_path, cls_name in _ADAPTERS:
+    try:
+        mod = __import__(mod_path, fromlist=[cls_name])
+        cls = getattr(mod, cls_name)
+        registry.register(cls())
+        log.info(f"registered adapter: {cls_name}")
+    except Exception as e:
+        log.warning(
+            f"skipping adapter {cls_name}: {type(e).__name__}: {e}"
+        )
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 from storage.clips import Clip, audio_path, get_clip, list_clips, new_clip_id, save_clip
