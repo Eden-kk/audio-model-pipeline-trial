@@ -29,9 +29,36 @@ Web playground + pipeline composer + corpus builder for **audio-model evaluation
 
 ---
 
-## Deployment — one URL on your AMD remote machine
+## Deployment
 
-This is the canonical path: a single `docker compose` stack that you run on an AMD-ROCm box and reach over the internet via one URL.
+Two paths today; pick whichever matches your hardware. The frontend + backend code is identical — only the model-server's location changes.
+
+| Path | When | Model-server | Walkthrough |
+|------|------|--------------|------|
+| **Local trial-app + Modal model-server** | No AMD GPU yet, or just testing | NVIDIA L4 on Modal Labs | [`docs/MODAL-DEPLOY.md`](docs/MODAL-DEPLOY.md) |
+| **All-on-AMD** (canonical) | AMD-ROCm machine ready | AMD-ROCm in same docker-compose | [`docs/AMD-DEPLOY.md`](docs/AMD-DEPLOY.md) |
+
+Both paths share the same `MODEL_SERVER_URL` env-var contract — switching is a one-line change in `.env`.
+
+### Path A — Local + Modal (no AMD needed)
+
+```bash
+# 1. Deploy the model-server to Modal (one time)
+pip install modal && modal token new
+cd model-server && modal deploy modal_app.py
+# → https://<workspace>--audio-trial-model-server-modelserver-fastapi.modal.run
+
+# 2. Run the trial-app locally
+cd ../backend && python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+echo "MODEL_SERVER_URL=https://<your-modal-url>" >> .env
+uvicorn main:app --port 8000 --reload &
+cd ../frontend && pnpm install && pnpm dev   # http://localhost:5173
+```
+
+Full walkthrough + cost notes + troubleshooting in [`docs/MODAL-DEPLOY.md`](docs/MODAL-DEPLOY.md).
+
+### Path B — All-on-AMD (one URL on the public internet)
 
 ```
 [your laptop] ─ HTTPS ─▶ [Caddy:443] ─▶ [trial-app:8000] ──▶ [model-server:9100]
@@ -54,7 +81,7 @@ Open `https://${PUBLIC_HOST}` from anywhere → land on the Playground.
 
 **Full walkthrough** — including hardware matrix (MI300X / 7900 XTX / etc.), the `HSA_OVERRIDE_GFX_VERSION` table for non-MI300 GPUs, troubleshooting, and URL-exposure variants (Cloudflare Tunnel, SSH tunnel, on-prem) — lives in [`docs/AMD-DEPLOY.md`](docs/AMD-DEPLOY.md).
 
-> **No AMD GPU?** The cloud adapters all still work — you can run the trial-app + frontend on any CPU machine. Skip the `model-server` service in compose (or run it CPU-only and accept a 5–20× slowdown for self-host models). The deploy walkthrough covers this case.
+> **No AMD GPU?** Use Path A (Modal). The cloud adapters work either way; only the NeMo self-host adapters change endpoints.
 
 ---
 
