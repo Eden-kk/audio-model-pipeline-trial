@@ -4,33 +4,13 @@ Web playground + pipeline composer + corpus builder for **audio-model evaluation
 
 **Why:** AR-glasses voice-assistant stacks are a moving target. Cloud APIs, edge models, omni vs stitched, streaming vs batch, open-weight vs closed — all evolving on different cadences. This app is the harness that lets a small research team keep up without a one-off script per candidate.
 
-**Status:** P0 MVP — audio-only. See [`docs/PLAN.md`](docs/PLAN.md) for the full capability matrix and phasing.
+**Status:** P0 MVP — audio only. Slice 0 (scaffold + Playground page) and Slice 1 (10 new adapters + AMD-ROCm deployment infra) shipped. See [`docs/PLAN.md`](docs/PLAN.md) for the full capability matrix and phasing.
 
 ---
 
-## Quick local run
+## What's in the model library today
 
-```bash
-# 1. Backend — FastAPI on Python 3.11+
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in your API keys
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-
-# 2. Frontend — Vite + React + TS
-cd ../frontend
-pnpm install     # or: npm install
-pnpm dev         # http://localhost:5173
-```
-
-Open `http://localhost:5173` in your browser. Sidebar exposes Playground / Pipelines / Run / Corpus / Settings.
-
----
-
-## P0 adapters and required env vars
-
-10 adapters, mixing cloud APIs with self-hosted CPU/GPU options. Two of them require **no key** (faster-whisper and Resemblyzer) — the app demos out of the box.
+12 adapters, mixing cloud APIs with self-hosted CPU/GPU options. **Two require no key** (faster-whisper and Resemblyzer) — the app demos out of the box.
 
 | # | Adapter | Category | Hosting | Env var |
 |---|---------|---------|---------|---------|
@@ -38,71 +18,63 @@ Open `http://localhost:5173` in your browser. Sidebar exposes Playground / Pipel
 | 2 | Gladia | ASR | cloud | `GLADIA_API_KEY` |
 | 3 | AssemblyAI Universal-2 | ASR | cloud | `ASSEMBLYAI_API_KEY` |
 | 4 | Speechmatics | ASR | cloud | `SPEECHMATICS_API_KEY` |
-| 5 | Groq Whisper | ASR | cloud | `GROQ_API_KEY` |
-| 6 | **faster-whisper** | ASR | **self-host CPU/GPU (in-process)** | — |
-| 7 | **Parakeet-TDT-1.1B** | ASR | **self-host (Modal today, AMD later)** | `PARAKEET_MODAL_URL` |
-| 8 | Cartesia Sonic-3 | TTS | cloud | `CARTESIA_API_KEY` |
-| 9 | pyannote/embedding | Speaker verify | self-host CPU | `HF_TOKEN` (accept license at [pyannote/embedding](https://huggingface.co/pyannote/embedding)) |
-| 10 | Resemblyzer | Speaker verify | self-host CPU | — |
-
-P1 adds OpenAI, ElevenLabs, GoogleChirp, Azure, ElevenLabs Scribe, Gemini Live (omni), gpt-realtime (omni), Moshi, Stitched pipeline, plus pyannote diarization. See `docs/PLAN.md` for the full P1 capability matrix.
+| 5 | Groq Whisper-Turbo (LPU) | ASR | cloud | `GROQ_API_KEY` |
+| 6 | **faster-whisper** *(small.en / large-v3 / large-v3-turbo / distil / turbo-en)* | ASR | self-host CPU/GPU (in-process) | — |
+| 7 | **Parakeet-TDT-1.1B** | ASR | self-host (model-server, AMD-ROCm) | `MODEL_SERVER_URL` |
+| 8 | **Canary-1B-flash** *(EN/DE/ES/FR)* | ASR | self-host (model-server) | `MODEL_SERVER_URL` |
+| 9 | **Canary-Qwen-2.5B** | ASR | self-host (model-server) | `MODEL_SERVER_URL` |
+| 10 | Cartesia Sonic-3 | TTS | cloud | `CARTESIA_API_KEY` |
+| 11 | pyannote/embedding | Speaker verify | self-host CPU | `HF_TOKEN` (license at [pyannote/embedding](https://huggingface.co/pyannote/embedding)) |
+| 12 | Resemblyzer | Speaker verify | self-host CPU | — |
 
 ---
 
-## Remote deployment + URL exposure
+## Deployment — one URL on your AMD remote machine
 
-You'll deploy on a remote server and want to visit the URL from a different machine. There are three coexisting paths — pick the one that matches your server.
+This is the canonical path: a single `docker compose` stack that you run on an AMD-ROCm box and reach over the internet via one URL.
 
-### Path A — single Linux server with Docker (simplest)
-
-A regular Linux box (cloud VM or on-prem) with Docker installed. The whole app — backend + frontend served by nginx — runs in one `docker compose` stack on a single port.
+```
+[your laptop] ─ HTTPS ─▶ [Caddy:443] ─▶ [trial-app:8000] ──▶ [model-server:9100]
+                                              │                ├ parakeet-tdt-1.1b
+                                              │                ├ canary-1b-flash
+                                              ▼                └ canary-qwen-2.5b
+                                       SPA static
+                                        (frontend/dist baked
+                                         into trial-app image)
+```
 
 ```bash
-# On the remote server
 git clone https://github.com/Eden-kk/audio-model-pipeline-trial.git
 cd audio-model-pipeline-trial
-cp .env.example .env && $EDITOR .env       # fill in API keys
-docker compose up -d --build               # binds 0.0.0.0:8080 by default
+cp .env.example .env && $EDITOR .env       # PUBLIC_HOST, LETSENCRYPT_EMAIL, API keys
+docker compose up -d --build               # Caddy auto-provisions TLS
 ```
 
-To visit from your laptop, you have three sub-options:
+Open `https://${PUBLIC_HOST}` from anywhere → land on the Playground.
 
-1. **Direct port** — if the server has a public IP and port 8080 is open (or 443 with a TLS terminator):
-   ```
-   http://<server-public-ip>:8080
-   ```
-2. **Cloudflare Tunnel** (recommended; free, no port-forwarding) — `cloudflared tunnel --url http://localhost:8080` prints a `https://*.trycloudflare.com` URL.
-3. **Tailscale / ZeroTier / SSH tunnel** — if the server is on a private network: `ssh -L 8080:localhost:8080 user@server` then visit `http://localhost:8080` locally.
+**Full walkthrough** — including hardware matrix (MI300X / 7900 XTX / etc.), the `HSA_OVERRIDE_GFX_VERSION` table for non-MI300 GPUs, troubleshooting, and URL-exposure variants (Cloudflare Tunnel, SSH tunnel, on-prem) — lives in [`docs/AMD-DEPLOY.md`](docs/AMD-DEPLOY.md).
 
-### Path B — serverless via Modal Labs
+> **No AMD GPU?** The cloud adapters all still work — you can run the trial-app + frontend on any CPU machine. Skip the `model-server` service in compose (or run it CPU-only and accept a 5–20× slowdown for self-host models). The deploy walkthrough covers this case.
 
-If you'd rather not manage a server, deploy the FastAPI backend as a Modal app (`modal_app.py` is provided). Modal mints a public HTTPS URL automatically.
+---
+
+## Local development (no Docker)
 
 ```bash
-pip install modal
-modal token new                  # one-time auth
-modal deploy modal_app.py
-# → prints  https://<workspace>--audio-trial-fastapi-app.modal.run
+# Backend — Python 3.11+
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # fill in any API keys you have
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# Frontend — Vite dev server (separate terminal)
+cd ../frontend
+pnpm install     # or: npm install
+pnpm dev         # http://localhost:5173 → talks to localhost:8000
 ```
 
-Frontend can either be:
-- **Static-hosted** alongside Modal: build `pnpm build`, point your frontend hosting (Vercel / Netlify / Cloudflare Pages) at the Modal URL via `VITE_API_URL`.
-- **Co-served** by the Modal app: the FastAPI app already mounts `frontend/dist` on `/` if it exists.
-
-### Path C — AMD GPU cloud (when self-hosted models land in P1)
-
-P0 MVP has **zero GPU workloads** — every adapter is either a cloud API or a small local-CPU model (Resemblyzer, pyannote/embedding-CPU). Deployment in P0 needs only a CPU server.
-
-When P1 lands and self-hosted models start mattering (Parakeet ASR, pyannote diarization, Qwen-7B serving via vLLM), the candidate AMD GPU clouds are RunPod (MI300X serverless), TensorWave (bare-metal), Crusoe, Hot Aisle. See [`docs/PLAN.md`](docs/PLAN.md) §Backend hosting for the trade-offs vs Modal — the call there is "stay on Modal until traffic exceeds ~100 sustained RPS." This README will pick up the AMD wiring instructions when those P1 models actually exist.
-
-### Exposing the URL — TL;DR
-
-| You have | Easiest path |
-|----------|--------------|
-| A cloud VM with public IP | Path A + direct port (or Cloudflare for HTTPS) |
-| A laptop / on-prem box behind NAT | Path A + Cloudflare Tunnel |
-| No server at all | Path B (Modal) |
-| GPU-heavy P1 workload (later) | Path C (RunPod / TensorWave) |
+The dev-server CORS allowlist already includes `localhost:5173`. To point the SPA at a non-localhost backend, set `VITE_API_URL=https://your-host` in `frontend/.env`.
 
 ---
 
@@ -111,20 +83,20 @@ When P1 lands and self-hosted models start mattering (Parakeet ASR, pyannote dia
 ```
 React + Vite + TS  ─── HTTP REST ───▶  FastAPI on uvicorn
    sidebar:                              ├── /api/adapters
-     Playground                          ├── /api/pipelines
+     Playground                          ├── /api/pipelines  (Slice 2)
      Pipelines                           ├── /api/clips
      Run                                 ├── /api/runs
      Corpus            ◀── WebSocket ─── └── /ws/run/{id}     (per-stage events)
      Settings                                    │
                                                  ▼
-                                  ┌──────────────────────────┐
-                                  │ adapters/registry.py     │
-                                  │  · Deepgram (cloud)      │
-                                  │  · Gladia (cloud)        │
-                                  │  · Cartesia (cloud)      │
-                                  │  · pyannote_verify (CPU) │
-                                  │  · Resemblyzer (CPU)     │
-                                  └──────────────────────────┘
+                                       backend/adapters/registry
+                                       — 12 adapters today
+                                       — protocol-typed inputs/outputs
+                                       — talks to model-server for self-host
+
+                                                 ▼ (NeMo only)
+                                       model-server FastAPI
+                                       (own ROCm container, GPU-passthrough)
 ```
 
 Full data model and phasing in [`docs/PLAN.md`](docs/PLAN.md).
@@ -134,11 +106,15 @@ Full data model and phasing in [`docs/PLAN.md`](docs/PLAN.md).
 ## Repo layout
 
 ```
-backend/         FastAPI app, adapter registry, pipeline runner, clip storage
-frontend/        Vite + React + TS — Playground / Pipelines / Run / Corpus / Settings
-docs/            Plan, ADRs, deployment notes
-modal_app.py     Optional Modal serverless entry (Path B)
-docker-compose.yml + Dockerfile  (Path A)
+backend/             FastAPI app, adapter registry (12 adapters), runner, clip storage
+frontend/            Vite + React + TS — Playground today; Pipelines/Run/Compare/Corpus in P1
+model-server/        ROCm container hosting NeMo ASR (Parakeet, Canary-1B, Canary-Qwen)
+docs/
+  PLAN.md            canonical product plan (P0 / P1 / P2)
+  AMD-DEPLOY.md      step-by-step AMD-ROCm deployment walkthrough
+docker-compose.yml   3-service stack: trial-app + model-server + Caddy
+Caddyfile            reverse proxy + auto-TLS
+.env.example         deployment env (PUBLIC_HOST, API keys, GPU overrides)
 ```
 
 Each new feature is its own commit on `main` (or a feature branch + PR).
