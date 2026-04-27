@@ -1,0 +1,44 @@
+# env / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# node / vite
+node_modules/
+frontend/dist/
+frontend/.vite/
+.DS_Store
+
+# audio + run artifacts (clip / run storage is on the server volume, not in git)
+data/
+clips/
+runs/
+*.wav
+*.mp3
+*.opus
+*.webm
+!frontend/public/**/*.wav
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# logs
+*.log
+logs/
