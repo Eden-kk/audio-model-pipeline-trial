@@ -37,6 +37,7 @@ from adapters.gladia_adapter import GladiaAdapter
 from adapters.assemblyai_adapter import AssemblyAIAdapter
 from adapters.speechmatics_adapter import SpeechmaticsAdapter
 from adapters.groq_whisper_adapter import GroqWhisperAdapter
+from adapters.cartesia_tts_adapter import CartesiaTTSAdapter
 
 registry.register(DeepgramAdapter())
 registry.register(FasterWhisperAdapter())
@@ -44,6 +45,7 @@ registry.register(GladiaAdapter())
 registry.register(AssemblyAIAdapter())
 registry.register(SpeechmaticsAdapter())
 registry.register(GroqWhisperAdapter())
+registry.register(CartesiaTTSAdapter())
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 from storage.clips import Clip, audio_path, get_clip, list_clips, new_clip_id, save_clip
