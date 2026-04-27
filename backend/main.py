@@ -33,9 +33,29 @@ load_dotenv()  # load backend/.env if present
 from adapters.base import registry
 from adapters.deepgram_adapter import DeepgramAdapter
 from adapters.faster_whisper_adapter import FasterWhisperAdapter
+from adapters.gladia_adapter import GladiaAdapter
+from adapters.assemblyai_adapter import AssemblyAIAdapter
+from adapters.speechmatics_adapter import SpeechmaticsAdapter
+from adapters.groq_whisper_adapter import GroqWhisperAdapter
+from adapters.cartesia_tts_adapter import CartesiaTTSAdapter
+from adapters.resemblyzer_adapter import ResemblyzerAdapter
+from adapters.pyannote_verify_adapter import PyannoteVerifyAdapter
+from adapters.parakeet_adapter import ParakeetAdapter
+from adapters.canary_1b_flash_adapter import Canary1BFlashAdapter
+from adapters.canary_qwen_25b_adapter import CanaryQwen25BAdapter
 
 registry.register(DeepgramAdapter())
 registry.register(FasterWhisperAdapter())
+registry.register(GladiaAdapter())
+registry.register(AssemblyAIAdapter())
+registry.register(SpeechmaticsAdapter())
+registry.register(GroqWhisperAdapter())
+registry.register(CartesiaTTSAdapter())
+registry.register(ResemblyzerAdapter())
+registry.register(PyannoteVerifyAdapter())
+registry.register(ParakeetAdapter())
+registry.register(Canary1BFlashAdapter())
+registry.register(CanaryQwen25BAdapter())
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
 from storage.clips import Clip, audio_path, get_clip, list_clips, new_clip_id, save_clip

@@ -42,12 +42,44 @@ class Adapter(Protocol):
     config_schema: Dict[str, Any]    # JSON Schema object describing run-time config knobs
     cost_per_call_estimate_usd: Optional[float]
 
-    # --- main entry point (ASR adapters) ---
+    # --- main entry points (one per category; adapters implement the relevant ones) ---
     async def transcribe(self, audio_path: str, config: dict) -> dict:
-        """Run ASR on the given audio file; return a dict with at minimum:
-        {text, words, language, duration_s, cost_usd}
+        """ASR adapters: audio file → text + word-level timing.
+        Returns at minimum: {text, words, language, duration_s, cost_usd}
         """
-        ...
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement transcribe(); "
+            f"check adapter.category before dispatch."
+        )
+
+    async def synthesize(self, text: str, config: dict) -> dict:
+        """TTS adapters: text → audio stream.
+        Returns at minimum: {audio_bytes, mime, sample_rate, duration_s,
+                              first_byte_ms, full_render_ms, cost_usd}
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement synthesize(); "
+            f"check adapter.category before dispatch."
+        )
+
+    async def enroll(self, audio_path: str, config: dict) -> dict:
+        """Speaker-verify adapters: enrol a reference clip → embedding bytes.
+        Returns: {embedding_b64, embedding_dim, embedding_dtype, duration_s}
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement enroll(); "
+            f"check adapter.category before dispatch."
+        )
+
+    async def verify(self, audio_path: str, *, enrolled_embedding_b64: str,
+                     config: dict) -> dict:
+        """Speaker-verify adapters: score a test clip against a stored embedding.
+        Returns: {score, threshold, match, duration_s, cost_usd}
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement verify(); "
+            f"check adapter.category before dispatch."
+        )
 
 
 # ─── Registry ─────────────────────────────────────────────────────────────────
