@@ -76,8 +76,15 @@ async def health():
 
 
 @app.get("/api/adapters")
-async def list_adapters():
-    return {"adapters": registry.to_json()}
+async def list_adapters(category: str | None = None):
+    """List registered adapters. Optional ?category=asr|tts|speaker_verify filter.
+
+    Returns a flat list (REST convention) — frontend expects `Adapter[]` directly.
+    """
+    items = registry.to_json()
+    if category:
+        items = [a for a in items if a.get("category") == category]
+    return items
 
 
 # ── Clips ─────────────────────────────────────────────────────────────────────
