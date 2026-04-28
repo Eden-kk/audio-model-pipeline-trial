@@ -513,9 +513,12 @@ export default function Playground() {
               />
             )}
 
-            {hasAudio && inputMode !== 'mic-stream' && (
+            {/* "Audio ready" status — guard on pendingBlob, not hasAudio, since
+                a deep-linked preselected clip also flips hasAudio true but has
+                no blob (its own panel above already shows the clip metadata). */}
+            {pendingBlob && inputMode !== 'mic-stream' && (
               <p className="text-xs text-green-700">
-                Audio ready — {(pendingBlob!.blob.size / 1024).toFixed(1)} KB ({pendingBlob!.mime})
+                Audio ready — {(pendingBlob.blob.size / 1024).toFixed(1)} KB ({pendingBlob.mime})
               </p>
             )}
           </div>
