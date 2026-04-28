@@ -37,7 +37,7 @@ export interface Adapter {
 
 export interface Clip {
   id: string
-  source: 'record' | 'upload'
+  source: 'record' | 'upload' | 'live-mic'
   modality: 'audio' | 'video'
   filename: string
   format: string
@@ -53,6 +53,16 @@ export interface Clip {
   scenarios: string[]
   uploaded_by: string
   created_at: string
+  /** Plan D A2 — populated for clips captured from /ws/mic with ?save=1.
+   *  The vendor's streaming transcript is stored as a ground-truth seed
+   *  for the AR-glass benchmark. null/empty for upload + record blobs. */
+  captured_transcript?: string | null
+  captured_transcript_segments?: Array<{
+    start: number
+    end: number
+    text: string
+    is_final: boolean
+  }>
 }
 
 /**

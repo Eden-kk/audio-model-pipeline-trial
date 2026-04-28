@@ -51,9 +51,28 @@ class Clip:
     scenarios: List[str] = field(default_factory=list)
     uploaded_by: str = ""
     created_at: str = ""
+    # Plan D Stage A2 — populated for clips captured from /ws/mic with
+    # ?save=1, where the vendor's streaming transcript is saved alongside
+    # the audio as a ground-truth seed. None for upload/record clips.
+    captured_transcript: Optional[str] = None
+    captured_transcript_segments: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Clip":
+        """Tolerant constructor for old manifests that pre-date later fields.
+
+        Drops keys the current dataclass doesn't know about so a future
+        downgrade can co-exist with manifests written by a newer version,
+        and back-fills missing keys with defaults so manifests written
+        before A2 still load. Without this, `Clip(**data)` would raise
+        TypeError on either drift direction.
+        """
+        import dataclasses
+        known = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 # ─── ffmpeg audio extraction ─────────────────────────────────────────────────
@@ -148,7 +167,7 @@ def get_clip(clip_id: str) -> Optional[Clip]:
     if not manifest.exists():
         return None
     data = json.loads(manifest.read_text(encoding="utf-8"))
-    return Clip(**data)
+    return Clip.from_dict(data)
 
 
 def list_clips() -> List[Clip]:
@@ -161,7 +180,7 @@ def list_clips() -> List[Clip]:
         if manifest.exists():
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8"))
-                clips.append(Clip(**data))
+                clips.append(Clip.from_dict(data))
             except Exception:
                 pass
     return clips

@@ -167,6 +167,10 @@ class ClipOut(BaseModel):
     scenarios: list
     uploaded_by: str
     created_at: str
+    # Plan D A2 — ground-truth-seed transcript captured at /ws/mic save time.
+    # null/empty for clips that came from upload or record-blob paths.
+    captured_transcript: Optional[str] = None
+    captured_transcript_segments: list = []
 
 
 @app.post("/api/clips", response_model=ClipOut, status_code=201)
@@ -239,6 +243,10 @@ class ClipPatch(BaseModel):
     language_detected: Optional[str] = None
     snr_db: Optional[float] = None
     speaker_count_estimate: Optional[int] = None
+    # Plan D A2 — let users hand-correct the captured transcript so the
+    # AR-glass benchmark can use it as a ground-truth reference.
+    captured_transcript: Optional[str] = None
+    captured_transcript_segments: Optional[list] = None
 
 
 @app.patch("/api/clips/{clip_id}", response_model=ClipOut)
@@ -262,6 +270,10 @@ async def update_clip(clip_id: str, patch: ClipPatch):
         clip.snr_db = float(patch.snr_db)
     if patch.speaker_count_estimate is not None:
         clip.speaker_count_estimate = int(patch.speaker_count_estimate)
+    if patch.captured_transcript is not None:
+        clip.captured_transcript = patch.captured_transcript
+    if patch.captured_transcript_segments is not None:
+        clip.captured_transcript_segments = list(patch.captured_transcript_segments)
     (_clip_dir(clip_id) / "manifest.json").write_text(
         _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
     )
