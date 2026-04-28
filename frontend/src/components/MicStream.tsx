@@ -62,6 +62,13 @@ export default function MicStream({ adapter, onEvent, disabled = false }: Props)
       await h.stop()
     }
     if (timerRef.current) clearInterval(timerRef.current)
+    // Flip UI back to "Stream from mic" right away — don't wait for the
+    // backend's StageCompleted to arrive. The vendor still has 100-500 ms
+    // of in-flight audio to flush, but from the user's perspective they
+    // hit Stop and the button should immediately reflect that.
+    handleRef.current = null
+    setStreaming(false)
+    setSeconds(0)
   }
 
   const label = streaming ? `Stop (${seconds}s)` : 'Stream from mic'
