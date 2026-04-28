@@ -11,6 +11,7 @@ import {
   type Recipe, type Adapter, type Clip, type RecipeRun, type StageRun,
 } from '../lib/api'
 import { cx } from '../lib/cx'
+import SegmentTimeline, { type Segment } from '../components/SegmentTimeline'
 
 const CATEGORY_BADGE: Record<string, string> = {
   asr: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -18,6 +19,10 @@ const CATEGORY_BADGE: Record<string, string> = {
   speaker_verify: 'bg-amber-100 text-amber-800 border-amber-200',
   vad: 'bg-green-100 text-green-800 border-green-200',
   diarization: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+  intent_llm: 'bg-pink-100 text-pink-800 border-pink-200',
+  realtime_omni: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
+  lid: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+  dispatch: 'bg-emerald-100 text-emerald-800 border-emerald-200',
 }
 
 type StageState = 'idle' | 'running' | 'done' | 'error'
@@ -304,7 +309,7 @@ export default function Run() {
 
       {/* Run result summary */}
       {runResult && (
-        <div className="mx-6 mb-6 card text-sm flex flex-wrap items-center gap-4">
+        <div className="mx-6 mb-3 card text-sm flex flex-wrap items-center gap-4">
           <span className="text-xs text-gray-500 uppercase tracking-wider">Run summary</span>
           <span className="font-mono text-gray-900">
             {runResult.total_latency_ms.toFixed(0)} ms total
@@ -324,6 +329,69 @@ export default function Run() {
           </span>
         </div>
       )}
+
+      {/* Slow-loop drill-in: per-segment user-tag timeline + envelope JSON */}
+      {runResult && runResult.stages.map((s) => {
+        const result = s.result as Record<string, unknown> | null | undefined
+        // speaker_tag stage with verify_segments() output
+        if (s.category === 'speaker_verify' && result && Array.isArray((result as { segments?: unknown[] }).segments)) {
+          const segs = (result as { segments: Segment[] }).segments
+          const dur = (result as { duration_s?: number }).duration_s
+          const thr = (result as { threshold?: number }).threshold
+          return (
+            <div key={`${s.stage_id}-tl`} className="mx-6 mb-3 card">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-xs text-gray-500 uppercase tracking-wider">
+                  Stage drill-in · {s.stage_id} ({s.adapter})
+                </span>
+                <span className="text-xs text-gray-500 font-mono ml-auto">
+                  {s.latency_ms?.toFixed(0)} ms
+                </span>
+              </div>
+              <SegmentTimeline segments={segs} duration_s={dur} threshold={thr} />
+            </div>
+          )
+        }
+        // intent_llm stage envelope
+        if (s.category === 'intent_llm' && result) {
+          const r = result as { memory_doc?: string; tool_calls?: unknown[]; salient_facts?: string[] }
+          return (
+            <div key={`${s.stage_id}-env`} className="mx-6 mb-3 card">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-xs text-gray-500 uppercase tracking-wider">
+                  Envelope · {s.stage_id} ({s.adapter})
+                </span>
+                <span className="text-xs text-gray-500 font-mono ml-auto">
+                  {s.latency_ms?.toFixed(0)} ms
+                </span>
+              </div>
+              {r.memory_doc && (
+                <div className="mb-2">
+                  <p className="text-xs text-gray-500">memory_doc</p>
+                  <p className="text-sm text-gray-900 whitespace-pre-wrap">{r.memory_doc}</p>
+                </div>
+              )}
+              {r.tool_calls && r.tool_calls.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-xs text-gray-500">tool_calls</p>
+                  <pre className="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-auto max-h-40">
+{JSON.stringify(r.tool_calls, null, 2)}
+                  </pre>
+                </div>
+              )}
+              {r.salient_facts && r.salient_facts.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500">salient_facts</p>
+                  <ul className="text-sm text-gray-900 list-disc list-inside">
+                    {r.salient_facts.map((f, i) => <li key={i}>{f}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )
+        }
+        return null
+      })}
     </div>
   )
 }

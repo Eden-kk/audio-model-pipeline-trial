@@ -11,6 +11,9 @@ const CATEGORY_BADGE: Record<string, string> = {
   diarization: 'bg-indigo-100 text-indigo-800 border-indigo-200',
   intent_llm: 'bg-pink-100 text-pink-800 border-pink-200',
   realtime_omni: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
+  // Slow-loop categories (Slice 9.2)
+  lid: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+  dispatch: 'bg-emerald-100 text-emerald-800 border-emerald-200',
 }
 
 function CategoryPill({ category }: { category: string }) {
