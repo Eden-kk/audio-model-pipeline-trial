@@ -279,6 +279,141 @@ async def delete_clip(clip_id: str):
     return None
 
 
+# ── Auto-tag scenarios ───────────────────────────────────────────────────────
+# Heuristic acoustic tagger that looks at SNR, spectral centroid, sample-rate
+# bandwidth, plus optional Whisper-LID + Resemblyzer signals to assign a
+# subset of the SCENARIO_PALETTE to each clip without the user having to
+# click chips one-by-one in the Corpus page. See pipelines/auto_tagger.py
+# for the rule set.
+
+class AutoTagOptions(BaseModel):
+    use_lid: bool = True
+    use_speaker_spread: bool = True
+    # If True, replace existing scenarios entirely; if False (default), union
+    # the auto-detected tags with whatever the user already set so manual
+    # work isn't clobbered.
+    replace: bool = False
+
+
+class AutoTagResult(BaseModel):
+    clip_id: str
+    detected: list                   # scenarios produced by the tagger
+    final_scenarios: list            # what the clip ended up with after merge
+    features: Dict[str, Any]
+    evidence: Dict[str, str]
+
+
+@app.post("/api/clips/{clip_id}/autotag", response_model=AutoTagResult)
+async def autotag_clip_endpoint(clip_id: str, opts: AutoTagOptions | None = None):
+    """Run the heuristic auto-tagger on a single clip and persist the
+    detected scenarios to its manifest. Returns the detected list +
+    feature values + per-tag evidence so the UI can show "why"."""
+    from pipelines.auto_tagger import autotag_clip
+    from storage.clips import _clip_dir   # type: ignore
+    import json as _json
+
+    clip = get_clip(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    p = audio_path(clip_id)
+    if not p or not p.exists():
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    options = opts or AutoTagOptions()
+    try:
+        result = await autotag_clip(
+            str(p),
+            registry=registry,
+            use_lid=options.use_lid,
+            use_speaker_spread=options.use_speaker_spread,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"autotag failed: {e}")
+
+    detected = result.get("scenarios") or []
+    if options.replace:
+        clip.scenarios = list(dict.fromkeys(detected))
+    else:
+        clip.scenarios = list(dict.fromkeys([*clip.scenarios, *detected]))
+
+    (_clip_dir(clip_id) / "manifest.json").write_text(
+        _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+    )
+    return AutoTagResult(
+        clip_id=clip_id,
+        detected=detected,
+        final_scenarios=clip.scenarios,
+        features=result.get("features") or {},
+        evidence=result.get("evidence") or {},
+    )
+
+
+class AutoTagAllResult(BaseModel):
+    total: int
+    succeeded: int
+    failed: int
+    results: list                    # list of AutoTagResult-shaped dicts
+    errors: Dict[str, str]           # clip_id → error message (only failures)
+
+
+@app.post("/api/clips/autotag-all", response_model=AutoTagAllResult)
+async def autotag_all_clips(opts: AutoTagOptions | None = None):
+    """Run the heuristic auto-tagger on EVERY clip in the corpus. The
+    Corpus page's 'Auto-tag all' button hits this; clips run sequentially
+    so we don't thrash CPU when the user has 100+ clips. Per-clip failures
+    don't abort the batch — they're returned in the `errors` map so the
+    UI can flag them."""
+    from pipelines.auto_tagger import autotag_clip
+    from storage.clips import _clip_dir, list_clips   # type: ignore
+    import json as _json
+
+    options = opts or AutoTagOptions()
+    clips = list_clips()
+    results: list = []
+    errors: Dict[str, str] = {}
+
+    for clip in clips:
+        p = audio_path(clip.id)
+        if not p or not p.exists():
+            errors[clip.id] = "audio file missing"
+            continue
+        try:
+            result = await autotag_clip(
+                str(p),
+                registry=registry,
+                use_lid=options.use_lid,
+                use_speaker_spread=options.use_speaker_spread,
+            )
+        except Exception as e:
+            errors[clip.id] = f"{type(e).__name__}: {e}"
+            continue
+
+        detected = result.get("scenarios") or []
+        if options.replace:
+            clip.scenarios = list(dict.fromkeys(detected))
+        else:
+            clip.scenarios = list(dict.fromkeys([*clip.scenarios, *detected]))
+
+        (_clip_dir(clip.id) / "manifest.json").write_text(
+            _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+        )
+        results.append({
+            "clip_id": clip.id,
+            "detected": detected,
+            "final_scenarios": clip.scenarios,
+            "features": result.get("features") or {},
+            "evidence": result.get("evidence") or {},
+        })
+
+    return AutoTagAllResult(
+        total=len(clips),
+        succeeded=len(results),
+        failed=len(errors),
+        results=results,
+        errors=errors,
+    )
+
+
 @app.get("/api/clips/{clip_id}/audio")
 async def stream_clip_audio(clip_id: str):
     clip = get_clip(clip_id)
