@@ -5,14 +5,20 @@ Pulls a small representative set of audio from
 into the local trial-app via POST /api/clips, then PATCHes scenario +
 user-tag chips so the Library page can filter by category.
 
-Categories shipped (35 clips total — keep small enough to iterate fast):
+Categories shipped (43 clips total — keep small enough to iterate fast):
 
   realtime-prompts        10  — q01..q10 (Kokoro-TTS assistant queries)
   english-utterances       5  — test_01..test_05 (longer English samples)
+  multilingual             8  — 2 clips × {es, fr, ja, de} (pub_*_00, pub_*_01)
   verification-clean       6  — LibriSpeech same/diff pairs (clean)
   verification-noise-5db   6  — same pairs + MUSAN @ +5 dB SNR
   verification-noise-0db   6  — same pairs + MUSAN @  0 dB SNR (worst-case)
   scenario-multi-speaker   2  — interleaved BAB / ABABA patterns
+
+Each clip is auto-tagged (no manual UI work required):
+  - language_detected   from source-dir convention (en/zh/es/fr/ja/de)
+  - snr_db              energy-based estimate from the WAV itself
+  - speaker_count_estimate  from filename pattern (BAB=2, ABABA=2, else 1)
 
 Each clip gets:
   scenarios=[primary_category, ...secondary_tags]
@@ -29,7 +35,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import httpx
 
@@ -168,15 +174,96 @@ SCENARIO_MULTI_SPEAKER: List[Tuple[str, List[str], List[str], str]] = [
      "speaker pattern A-B-A-B-A (5 turns)"),
 ]
 
+# Multilingual public-domain reads (LibriVox-derived). 2 clips × 4 langs.
+# zh/ is empty in the benchmark corpus — handled separately when it lands.
+MULTILINGUAL: List[Tuple[str, List[str], List[str], str]] = []
+for lang in ("es", "fr", "ja", "de"):
+    for idx in (0, 1):
+        MULTILINGUAL.append((
+            f"{lang}/pub_{lang}_{idx:02d}.wav",
+            ["multilingual", f"lang-{lang}", "real-human-speech", "public-domain"],
+            ["librivox-public", f"language-{lang}"],
+            f"public-domain {lang.upper()} read #{idx:02d}",
+        ))
+
 
 ALL_CLIPS = (
     REALTIME_PROMPTS
     + ENGLISH_UTTERANCES
+    + MULTILINGUAL
     + VERIFICATION_CLEAN
     + VERIFICATION_NOISE_5DB
     + VERIFICATION_NOISE_0DB
     + SCENARIO_MULTI_SPEAKER
 )
+
+
+# ─── Auto-taggers ─────────────────────────────────────────────────────────────
+# Run on each clip during ingest so the user never has to manually tag.
+# Cheap heuristics — no external API calls. The trial app's adapter
+# library already gives proper detection if/when we want to swap.
+
+def derive_language(rel_path: str) -> str:
+    """Source-dir convention: en/, zh/, es/, fr/, ja/, de/ → that lang.
+    Everything else (LibriSpeech verification clips, scenario_a, realtime
+    prompts) is English."""
+    head = rel_path.split("/", 1)[0]
+    if head in ("en", "zh", "es", "fr", "ja", "de"):
+        return head
+    return "en"
+
+
+def derive_speaker_count(rel_path: str) -> int:
+    """Filename pattern → speaker count.
+      sceneA_00_BAB.wav    → 2  (alphabet-pattern reveals two speakers)
+      sceneA_01_ABABA.wav  → 2
+      everything else      → 1
+    """
+    name = rel_path.rsplit("/", 1)[-1].lower()
+    if "_bab" in name or "_abab" in name or "_baba" in name or "_abba" in name:
+        return 2
+    return 1
+
+
+def estimate_snr_db(wav_path: Path) -> float:
+    """Energy-based SNR estimate.
+
+    Splits the wav into 50 ms frames, computes RMS per frame, then
+    20·log10(p90 / p10). The 90th-percentile-loud frame is treated as
+    'speech', the 10th-percentile-quiet as 'noise'. Crude but robust
+    enough to bucket clean (>15 dB) vs noisy (<10 dB) reliably.
+    """
+    import wave
+    import numpy as np
+
+    with wave.open(str(wav_path), "rb") as wf:
+        sr = wf.getframerate()
+        sw = wf.getsampwidth()
+        n  = wf.getnframes()
+        ch = wf.getnchannels()
+        raw = wf.readframes(n)
+
+    if sw != 2:
+        return float("nan")
+    samples = np.frombuffer(raw, dtype=np.int16)
+    if ch > 1:
+        samples = samples.reshape(-1, ch).mean(axis=1)
+    samples = samples.astype(np.float32) / 32768.0
+
+    frame_len = max(1, int(sr * 0.050))     # 50 ms
+    n_full = (samples.size // frame_len) * frame_len
+    if n_full == 0:
+        return float("nan")
+    frames = samples[:n_full].reshape(-1, frame_len)
+    rms = np.sqrt(np.maximum((frames ** 2).mean(axis=1), 1e-12))
+
+    p90 = float(np.percentile(rms, 90))
+    p10 = float(np.percentile(rms, 10))
+    if p10 < 1e-9:
+        # Effectively silence in the quiet frames → cap SNR
+        return 60.0
+    snr = 20.0 * (np.log10(p90) - np.log10(p10))
+    return float(round(snr, 1))
 
 
 # ─── Ingest helpers ──────────────────────────────────────────────────────────
@@ -203,12 +290,24 @@ def post_clip(api: str, abs_path: Path, original_filename: str) -> dict:
     return r.json()
 
 
-def patch_tags(api: str, clip_id: str, scenarios: List[str], user_tags: List[str]) -> None:
-    r = httpx.patch(
-        f"{api}/api/clips/{clip_id}",
-        json={"scenarios": scenarios, "user_tags": user_tags},
-        timeout=30,
-    )
+def patch_tags(
+    api: str,
+    clip_id: str,
+    scenarios: List[str],
+    user_tags: List[str],
+    *,
+    language: Optional[str] = None,
+    snr_db: Optional[float] = None,
+    speaker_count: Optional[int] = None,
+) -> None:
+    body: dict = {"scenarios": scenarios, "user_tags": user_tags}
+    if language is not None:
+        body["language_detected"] = language
+    if snr_db is not None and snr_db == snr_db:   # not NaN
+        body["snr_db"] = snr_db
+    if speaker_count is not None:
+        body["speaker_count_estimate"] = speaker_count
+    r = httpx.patch(f"{api}/api/clips/{clip_id}", json=body, timeout=30)
     r.raise_for_status()
 
 
@@ -248,10 +347,34 @@ def main() -> int:
             continue
         try:
             clip = post_clip(args.api, src, src.name)
-            patch_tags(args.api, clip["id"], scenarios, user_tags)
+
+            # Auto-tagger pass — derives the fields the user would
+            # otherwise have to set in the UI.
+            language = derive_language(rel_path)
+            speaker_count = derive_speaker_count(rel_path)
+            try:
+                snr = estimate_snr_db(src)
+            except Exception:
+                snr = None
+
+            # Add SNR-bucket scenarios automatically (so the Library can
+            # filter 'clean / mid / noisy' without the user picking).
+            if snr is not None and snr == snr:  # not NaN
+                if snr >= 15:
+                    scenarios = list(scenarios) + ["snr-clean"]
+                elif snr >= 5:
+                    scenarios = list(scenarios) + ["snr-mid"]
+                else:
+                    scenarios = list(scenarios) + ["snr-noisy"]
+
+            patch_tags(
+                args.api, clip["id"], scenarios, user_tags,
+                language=language, snr_db=snr, speaker_count=speaker_count,
+            )
             cat = scenarios[0]
             by_category.setdefault(cat, []).append((clip["id"], src.name, note))
-            print(f"  ✓ [{cat}] {src.name}  →  {clip['id']}")
+            print(f"  ✓ [{cat}] {src.name}  →  {clip['id']:8}…  "
+                  f"lang={language}  snr={snr if snr else '—'}dB  spk={speaker_count}")
         except Exception as e:
             print(f"  ✗ FAILED: {rel_path}: {e}", file=sys.stderr)
             failed += 1

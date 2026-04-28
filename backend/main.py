@@ -234,12 +234,19 @@ async def get_clips():
 class ClipPatch(BaseModel):
     user_tags: Optional[list] = None
     scenarios: Optional[list] = None
+    # Auto-tagger fields — populated by the ingest script (or a future
+    # auto-tagger in the upload route).  Not normally set from the UI.
+    language_detected: Optional[str] = None
+    snr_db: Optional[float] = None
+    speaker_count_estimate: Optional[int] = None
 
 
 @app.patch("/api/clips/{clip_id}", response_model=ClipOut)
 async def update_clip(clip_id: str, patch: ClipPatch):
-    """Mutate a clip's user_tags / scenarios — used by the Corpus page chip
-    tagger.  Other fields are immutable post-ingest by design."""
+    """Mutate a clip's user_tags / scenarios + auto-tagger metadata —
+    used by the Corpus page chip tagger and the ingest auto-tagger.
+    Other fields (id / format / duration_s / etc.) are immutable
+    post-ingest by design."""
     import json as _json
     from storage.clips import _clip_dir   # type: ignore
     clip = get_clip(clip_id)
@@ -249,6 +256,12 @@ async def update_clip(clip_id: str, patch: ClipPatch):
         clip.user_tags = list(dict.fromkeys(patch.user_tags))   # dedupe
     if patch.scenarios is not None:
         clip.scenarios = list(dict.fromkeys(patch.scenarios))
+    if patch.language_detected is not None:
+        clip.language_detected = patch.language_detected
+    if patch.snr_db is not None:
+        clip.snr_db = float(patch.snr_db)
+    if patch.speaker_count_estimate is not None:
+        clip.speaker_count_estimate = int(patch.speaker_count_estimate)
     (_clip_dir(clip_id) / "manifest.json").write_text(
         _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
     )
