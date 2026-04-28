@@ -212,6 +212,75 @@ export async function startRun(
 }
 
 // ---------------------------------------------------------------------------
+// Enrollment (Slice 9.1e + 9.4)
+// ---------------------------------------------------------------------------
+
+export interface Enrollment {
+  profile_id: string
+  adapter: string
+  embedding_dim: number
+  saved_to: string
+  enrolled_at: string
+}
+
+export interface EnrollResult {
+  profile_id: string
+  adapter: string
+  embedding_dim: number
+  embedding_dtype: string
+  duration_s: number | null
+  saved_to: string
+}
+
+/** POST /api/enroll — upload a reference clip → save embedding to disk. */
+export async function enrollWearer(
+  blob: Blob,
+  mime: string,
+  opts: { adapter?: string; profile_id?: string } = {},
+): Promise<EnrollResult> {
+  const form = new FormData()
+  const ext = mime.includes('wav') ? 'wav' : mime.includes('webm') ? 'webm'
+            : mime.includes('ogg') ? 'ogg' : 'wav'
+  form.append('file', blob, `enroll.${ext}`)
+  form.append('adapter', opts.adapter ?? 'pyannote_verify')
+  form.append('profile_id', opts.profile_id ?? 'wearer')
+  const res = await fetch(`${BASE}/api/enroll`, { method: 'POST', body: form })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`Enroll ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<EnrollResult>
+}
+
+export async function listEnrollments(): Promise<Enrollment[]> {
+  const r = await apiFetch<{ enrollments: Enrollment[] }>('/api/enroll')
+  return r.enrollments
+}
+
+export async function deleteEnrollment(profileId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/enroll/${profileId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Delete ${res.status}`)
+}
+
+// ---------------------------------------------------------------------------
+// Settings — read-only env status
+// ---------------------------------------------------------------------------
+
+export interface BackendSettings {
+  api_keys: Record<string, 'set' | 'unset'>
+  service_urls: Record<string, { value: string | null; configured: boolean }>
+  intent_llm: {
+    url_configured: boolean
+    default_model: string
+    key_configured: boolean
+  }
+}
+
+export async function getSettings(): Promise<BackendSettings> {
+  return apiFetch<BackendSettings>('/api/settings')
+}
+
+// ---------------------------------------------------------------------------
 // Recipes (multi-stage pipelines)
 // ---------------------------------------------------------------------------
 

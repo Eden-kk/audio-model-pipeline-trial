@@ -409,6 +409,58 @@ async def list_enrollments():
     return {"enrollments": out}
 
 
+@app.delete("/api/enroll/{profile_id}", status_code=204)
+async def delete_enrollment(profile_id: str):
+    """Delete a saved enrollment so the wearer can re-enroll."""
+    p = _enrollments_dir() / f"{profile_id}.json"
+    if p.exists():
+        try:
+            p.unlink()
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    return None
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Read-only env-var status for the Settings page.
+
+    Reports which API keys + service URLs are configured WITHOUT exposing
+    secret values. Used to render green/grey 'configured' chips beside
+    each adapter category.
+    """
+    keys = [
+        "DEEPGRAM_API_KEY", "GLADIA_API_KEY", "ASSEMBLYAI_API_KEY",
+        "SPEECHMATICS_API_KEY", "GROQ_API_KEY", "CARTESIA_API_KEY",
+        "ELEVENLABS_API_KEY", "OPENAI_API_KEY", "HF_TOKEN",
+    ]
+    urls = ["INTENT_LLM_URL", "MODEL_SERVER_URL", "PUBLIC_ORIGIN", "DATA_DIR"]
+    api_keys: Dict[str, str] = {}
+    for k in keys:
+        v = os.environ.get(k, "")
+        if v and not v.startswith("your_"):
+            api_keys[k] = "set"
+        else:
+            api_keys[k] = "unset"
+
+    url_status: Dict[str, Any] = {}
+    for k in urls:
+        v = os.environ.get(k, "")
+        url_status[k] = {"value": v if v else None,
+                         "configured": bool(v) and not v.startswith("your_")}
+
+    return {
+        "api_keys": api_keys,
+        "service_urls": url_status,
+        "intent_llm": {
+            "url_configured": bool(os.environ.get("INTENT_LLM_URL")),
+            "default_model": os.environ.get(
+                "INTENT_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
+            "key_configured": bool(os.environ.get("INTENT_LLM_KEY")),
+        },
+    }
+
+
 @app.get("/api/enroll/{profile_id}/embedding")
 async def get_enrollment_embedding(profile_id: str):
     """Return the raw embedding_b64 for a profile — used by the slow-loop
