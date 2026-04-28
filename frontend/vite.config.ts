@@ -26,11 +26,21 @@ function ortWasmWorkerPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const url = (req.url || '').split('?')[0]
-        // Match /node_modules/.vite/deps/ort-wasm-simd-threaded[.jsep|.jspi|.asyncify].mjs
+        // Match the worker .mjs / .wasm file by basename, regardless of
+        // where in node_modules the path resolved to. esbuild's prebundle
+        // rewrites the dynamic-import URL to the actual resolved location
+        // (under .pnpm/onnxruntime-web@x.y.z/... when pnpm is the package
+        // manager), so a regex tied to .vite/deps/ would miss it.
         const m = url.match(
-          /\/node_modules\/\.vite\/deps\/(ort-wasm-simd-threaded(?:\.[a-z]+)?\.(?:mjs|wasm))$/,
+          /\/(ort-wasm-simd-threaded(?:\.(?:jsep|jspi|asyncify))?\.(?:mjs|wasm))$/,
         )
         if (!m) return next()
+        // Only intercept when the request is somewhere under node_modules
+        // (so we don't accidentally hijack a same-named file the app code
+        // copied elsewhere). Both /node_modules/.vite/deps/... and
+        // /node_modules/.pnpm/... and plain /node_modules/onnxruntime-web/...
+        // are valid.
+        if (!url.includes('/node_modules/')) return next()
         const filePath = path.join(ortDistDir, m[1])
         if (!existsSync(filePath)) return next()
         readFile(filePath)
