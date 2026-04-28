@@ -1,0 +1,40 @@
+# Cloudflared named-tunnel config.
+#
+# Plan D Stage C1. Use ONLY for the `--profile named` path of
+# deploy/docker-compose.cloudflared.yml. Skip this file entirely for the
+# ephemeral *.trycloudflare.com flow (no setup needed).
+#
+# One-time setup:
+#   1. cloudflared tunnel login
+#       (opens a browser; authenticate with your Cloudflare account)
+#   2. cloudflared tunnel create audio-trial-app
+#       (prints a TUNNEL_UUID and writes ~/.cloudflared/<UUID>.json)
+#   3. Copy this file to config.yml and replace TUNNEL_UUID + the
+#      hostname below.
+#   4. cloudflared tunnel route dns audio-trial-app audio-trial.your-domain.com
+#       (creates a CNAME in Cloudflare DNS pointing at the tunnel)
+#   5. docker compose -f deploy/docker-compose.cloudflared.yml \
+#         --profile named up -d
+#
+# After that, https://audio-trial.your-domain.com terminates at Cloudflare's
+# edge, tunnels through the docker network's `cloudflared-named` container,
+# and lands on trial-app:8000 — no inbound port open on your host.
+
+tunnel: TUNNEL_UUID                    # uuid from `cloudflared tunnel create`
+credentials-file: /root/.cloudflared/TUNNEL_UUID.json
+
+# Optional: log to stdout (docker compose logs) at INFO level.
+loglevel: info
+
+# Catch-all: forward every hostname in `ingress` to trial-app.
+ingress:
+  - hostname: audio-trial.your-domain.com
+    service: http://trial-app:8000
+    originRequest:
+      # WebSocket support — the live-mic page needs this.
+      noTLSVerify: true
+      # Long-lived ws connections; bump if your captures are >5 min.
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+  # Required catch-all — anything not matched above gets a 404.
+  - service: http_status:404

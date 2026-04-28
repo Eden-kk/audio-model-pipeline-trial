@@ -1,0 +1,101 @@
+# ─── Audio-trial app behind Cloudflare Tunnel ────────────────────────────────
+# Plan D Stage C1.
+#
+# Use this when you want a public URL without:
+#   - opening ports 80/443 on your router/firewall
+#   - owning a domain (the ephemeral path is *.trycloudflare.com, free)
+#   - dealing with Let's Encrypt
+#
+# Two paths in one file:
+#
+#   1. EPHEMERAL (no domain, free, URL changes per restart) — default profile
+#       cd deploy
+#       docker compose -f docker-compose.cloudflared.yml up -d
+#       docker compose -f docker-compose.cloudflared.yml logs cloudflared \
+#           | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | head -1
+#       # → open the printed URL from any machine
+#
+#   2. NAMED TUNNEL (your own domain, persistent URL) — profile=named
+#       # one-time:
+#       cloudflared tunnel login
+#       cloudflared tunnel create audio-trial-app
+#       cp cloudflared/config.yml.example cloudflared/config.yml
+#       # edit config.yml to point at your credentials JSON + DNS hostname
+#       cloudflared tunnel route dns audio-trial-app \
+#           audio-trial.<your-domain>
+#
+#       # then:
+#       docker compose -f docker-compose.cloudflared.yml \
+#           --profile named up -d
+#
+# The trial-app service is shared between the two profiles. Model-server
+# is intentionally NOT included — bring it up separately via
+# `model-server/docker-compose.yml` (AMD) or `modal deploy` (Modal).
+
+services:
+  trial-app:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      args:
+        VITE_API_URL: ""    # same origin: SPA fetches /api/*, /ws/*
+    image: audio-trial-app:latest
+    container_name: trial-app
+    restart: unless-stopped
+    env_file:
+      - ../.env             # API keys, MODEL_SERVER_BACKEND/URL, etc.
+    environment:
+      DATA_DIR: /app/data
+      # If you're running model-server elsewhere, override these in .env:
+      #   MODEL_SERVER_BACKEND=amd
+      #   MODEL_SERVER_AMD_URL=http://your-amd-host:9100
+      # Or set MODEL_SERVER_MODAL_URL after `modal deploy`.
+    volumes:
+      - trial-data:/app/data
+    networks:
+      - tunnel-net
+    expose:
+      - "8000"
+
+  # ─── Profile: ephemeral (default) ──────────────────────────────────────────
+  # No login, no domain, no config file. Cloudflare assigns a random
+  # *.trycloudflare.com URL; it changes on every restart.
+  cloudflared-ephemeral:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-ephemeral
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://trial-app:8000
+    networks:
+      - tunnel-net
+    depends_on:
+      - trial-app
+
+  # ─── Profile: named (opt-in via --profile named) ───────────────────────────
+  cloudflared-named:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-named
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+      # Mount your CF tunnel credentials JSON at the path your config.yml
+      # references. Default convention used by `cloudflared tunnel create`:
+      #   ~/.cloudflared/<tunnel-uuid>.json
+      - ${HOME}/.cloudflared:/root/.cloudflared:ro
+    networks:
+      - tunnel-net
+    depends_on:
+      - trial-app
+    profiles: [named]
+
+networks:
+  tunnel-net:
+    driver: bridge
+
+volumes:
+  trial-data:
+    name: audio-trial-data

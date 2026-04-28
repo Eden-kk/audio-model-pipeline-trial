@@ -1,0 +1,3 @@
+# Don't commit a real config.yml — it has the tunnel UUID
+# and references local credential files.
+config.yml
