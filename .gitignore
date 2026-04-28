@@ -43,5 +43,10 @@ runs/
 *.log
 logs/
 
-# Backend local data (clips and run logs — not committed)
-backend/data/
+# Backend local data (clips and run logs — not committed). The README is
+# the only file that *is* tracked so the layout doc travels with the repo.
+# Re-include the dir explicitly because the broader `data/` pattern above
+# would otherwise exclude `backend/data/` and prevent any `!` rescue.
+!backend/data/
+backend/data/*
+!backend/data/README.md
