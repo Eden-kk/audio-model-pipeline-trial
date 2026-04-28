@@ -18,3 +18,8 @@ deepgram-sdk
 resemblyzer
 pyannote.audio>=3.1
 torch
+torchaudio
+# pyannote 3.x dropped omegaconf from install_requires but its lightning
+# checkpoint loader still needs it on import. Keep it explicit so a fresh
+# venv doesn't 500 on the first /api/enroll call.
+omegaconf
