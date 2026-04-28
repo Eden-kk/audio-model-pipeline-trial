@@ -42,6 +42,15 @@ class Adapter(Protocol):
     config_schema: Dict[str, Any]    # JSON Schema object describing run-time config knobs
     cost_per_call_estimate_usd: Optional[float]
 
+    # --- streaming capability ---
+    # True  → adapter implements transcribe_stream() (async generator that
+    #         yields {partial_text, is_final, words?, raw?} dicts).
+    #         The runner emits stage.progress events per yield, then a final
+    #         stage.finished with the full text.
+    # False → adapter only implements synchronous transcribe()/synthesize();
+    #         the runner emits a single stage.finished with the full result.
+    is_streaming: bool = False
+
     # --- main entry points (one per category; adapters implement the relevant ones) ---
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         """ASR adapters: audio file → text + word-level timing.
@@ -81,6 +90,27 @@ class Adapter(Protocol):
             f"check adapter.category before dispatch."
         )
 
+    async def transcribe_stream(self, audio_path: str, config: dict):
+        """ASR adapters with is_streaming=True: yield incremental partials.
+
+        Each yielded dict has at minimum:
+          {"partial_text": str, "is_final": bool}
+
+        Optional extra keys:
+          "words": [...]  (final only — full word-timing list)
+          "language": "en"
+          "raw": <vendor-specific payload>
+
+        The last yield should have is_final=True with the full transcript;
+        the runner uses that to write the run record.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement transcribe_stream(); "
+            f"is_streaming should be False."
+        )
+        if False:
+            yield  # type: ignore[unreachable]  (makes this an async generator)
+
 
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
@@ -117,6 +147,7 @@ class Registry:
                 "outputs": a.outputs,
                 "config_schema": a.config_schema,
                 "cost_per_call_estimate_usd": a.cost_per_call_estimate_usd,
+                "is_streaming": bool(getattr(a, "is_streaming", False)),
             })
         return out
 

@@ -219,6 +219,7 @@ export default function Playground() {
               >
                 {adapters.map((a) => (
                   <option key={a.id} value={a.id}>
+                    {a.is_streaming ? '● ' : '○ '}
                     {a.display_name} — {a.vendor}
                   </option>
                 ))}
@@ -233,6 +234,16 @@ export default function Playground() {
                 <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
                   {selectedMeta.hosting}
                 </span>
+                {selectedMeta.is_streaming ? (
+                  <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200 font-medium">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 mr-1 align-middle animate-pulse" />
+                    stream
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                    batch
+                  </span>
+                )}
                 <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200 font-mono">
                   {selectedMeta.id}
                 </span>

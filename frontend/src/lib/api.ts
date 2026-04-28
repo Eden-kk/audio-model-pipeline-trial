@@ -28,6 +28,11 @@ export interface Adapter {
   outputs: { name: string; type: string }[]
   config_schema: Record<string, unknown>
   cost_per_call_estimate_usd: number | null
+  /** True if the adapter implements transcribe_stream() and the runner
+   *  emits stage.progress events as partial transcripts arrive. The
+   *  Playground renders a typing cursor for these; batch adapters get
+   *  a single-shot final transcript. */
+  is_streaming?: boolean
 }
 
 export interface Clip {
