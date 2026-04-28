@@ -1152,6 +1152,9 @@ async def _proxy_deepgram_mic(
     final_segments: list = []
     latest_partial = ""
     full_words: list = []
+    # Plan D A4 — per-segment transcript with timing, saved alongside the
+    # clip as a ground-truth seed for the AR-glass benchmark.
+    transcript_segments: list = []
     partial_count = 0
     stopped = False
 
@@ -1209,13 +1212,28 @@ async def _proxy_deepgram_mic(
                     if is_final and text:
                         final_segments.append(text)
                         latest_partial = ""
-                        for w in alt.get("words", []) or []:
+                        seg_words = alt.get("words", []) or []
+                        for w in seg_words:
                             full_words.append({
                                 "word": w.get("word", ""),
                                 "start": float(w.get("start", 0.0)),
                                 "end": float(w.get("end", 0.0)),
                                 "confidence": w.get("confidence"),
                             })
+                        # A4: record this finalized segment with timing
+                        # for the captured-transcript ground-truth seed.
+                        if seg_words:
+                            seg_start = float(seg_words[0].get("start", 0.0))
+                            seg_end = float(seg_words[-1].get("end", 0.0))
+                        else:
+                            seg_start = time.perf_counter() - t0
+                            seg_end = seg_start
+                        transcript_segments.append({
+                            "start": seg_start,
+                            "end": seg_end,
+                            "text": text,
+                            "is_final": True,
+                        })
                     else:
                         latest_partial = text
                     accumulated = " ".join(final_segments)
@@ -1262,6 +1280,8 @@ async def _proxy_deepgram_mic(
                     bytes(pcm_buf),
                     sample_rate=sample_rate,
                     vendor="deepgram",
+                    transcript=full_text or None,
+                    transcript_segments=transcript_segments,
                 )
                 if clip_id:
                     await client_ws.send_json({
@@ -1316,6 +1336,8 @@ async def _proxy_assemblyai_mic(
     finalized_turns: list = []
     unfmt_partial = ""
     all_words: list = []
+    # Plan D A4 — captured per-segment transcript with timing.
+    transcript_segments: list = []
     partial_count = 0
 
     try:
@@ -1371,11 +1393,25 @@ async def _proxy_assemblyai_mic(
                         if transcript:
                             finalized_turns.append(transcript)
                         unfmt_partial = ""
-                        for w in msg.get("words", []) or []:
+                        turn_words = msg.get("words", []) or []
+                        for w in turn_words:
                             all_words.append({
                                 "word": w.get("text", ""),
                                 "start": float(w.get("start", 0)) / 1000.0,
                                 "end": float(w.get("end", 0)) / 1000.0,
+                            })
+                        if transcript:
+                            if turn_words:
+                                seg_start = float(turn_words[0].get("start", 0)) / 1000.0
+                                seg_end = float(turn_words[-1].get("end", 0)) / 1000.0
+                            else:
+                                seg_start = time.perf_counter() - t0
+                                seg_end = seg_start
+                            transcript_segments.append({
+                                "start": seg_start,
+                                "end": seg_end,
+                                "text": transcript,
+                                "is_final": True,
                             })
                     else:
                         unfmt_partial = transcript
@@ -1422,6 +1458,8 @@ async def _proxy_assemblyai_mic(
                     bytes(pcm_buf),
                     sample_rate=sample_rate,
                     vendor="assemblyai",
+                    transcript=full_text or None,
+                    transcript_segments=transcript_segments,
                 )
                 if clip_id:
                     await client_ws.send_json({
