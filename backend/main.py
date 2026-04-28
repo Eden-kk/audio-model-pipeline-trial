@@ -280,6 +280,151 @@ async def stream_clip_audio(clip_id: str):
     return FileResponse(str(p), media_type=media_type)
 
 
+# ── Enrollment (Slice 9.1e) ───────────────────────────────────────────────────
+# The wearer's reference embedding lives at data/enrollments/wearer.json.
+# Slow-loop's speaker_tag stage reads this on every run via stage config.
+# v2 (familiar voices) and v3 (auto-enroll cluster IDs) extend the same
+# directory with one file per profile; no schema migration needed.
+
+class EnrollOut(BaseModel):
+    profile_id: str
+    adapter: str
+    embedding_dim: int
+    embedding_dtype: str
+    duration_s: float | None = None
+    saved_to: str
+
+
+class EnrollListItem(BaseModel):
+    profile_id: str
+    adapter: str
+    embedding_dim: int
+    saved_to: str
+    enrolled_at: str
+
+
+def _enrollments_dir() -> Path:
+    return Path(os.environ.get("DATA_DIR", "data")) / "enrollments"
+
+
+@app.post("/api/enroll", response_model=EnrollOut, status_code=201)
+async def enroll_wearer(
+    file: UploadFile = File(...),
+    adapter: str = Form("pyannote_verify"),
+    profile_id: str = Form("wearer"),
+):
+    """Enroll a reference clip → embedding → JSON on disk.
+
+    Audio is saved to a tempfile, the chosen speaker_verify adapter's
+    `enroll()` method is called, and the resulting embedding (plus metadata)
+    is persisted to `data/enrollments/<profile_id>.json` so the slow-loop
+    speaker_tag stage can load it without re-uploading.
+    """
+    try:
+        ad = registry.get(adapter)
+    except KeyError:
+        raise HTTPException(status_code=400,
+                            detail=f"adapter {adapter!r} not registered")
+    if getattr(ad, "category", None) != "speaker_verify":
+        raise HTTPException(
+            status_code=400,
+            detail=f"adapter {adapter!r} is category "
+                   f"{getattr(ad, 'category', '?')!r}, expected speaker_verify",
+        )
+
+    audio_bytes = await file.read()
+    suffix = Path(file.filename or "ref.wav").suffix or ".wav"
+    import tempfile as _tempfile
+    with _tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        result = await ad.enroll(tmp_path, {})
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    enr_dir = _enrollments_dir()
+    enr_dir.mkdir(parents=True, exist_ok=True)
+    saved_to = enr_dir / f"{profile_id}.json"
+
+    # Best-effort duration from the canonical audio
+    duration_s: Optional[float] = None
+    try:
+        import io as _io
+        import soundfile as _sf
+        info = _sf.info(_io.BytesIO(audio_bytes))
+        duration_s = float(info.duration)
+    except Exception:
+        pass
+
+    record = {
+        "profile_id": profile_id,
+        "adapter": adapter,
+        "embedding_b64": result["embedding_b64"],
+        "embedding_dim": result["embedding_dim"],
+        "embedding_dtype": result.get("embedding_dtype", "float32"),
+        "duration_s": duration_s,
+        "enrolled_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "filename": file.filename,
+    }
+    saved_to.write_text(__import__("json").dumps(record, indent=2),
+                        encoding="utf-8")
+
+    return EnrollOut(
+        profile_id=profile_id,
+        adapter=adapter,
+        embedding_dim=record["embedding_dim"],
+        embedding_dtype=record["embedding_dtype"],
+        duration_s=duration_s,
+        saved_to=str(saved_to),
+    )
+
+
+@app.get("/api/enroll", response_model=Dict[str, Any])
+async def list_enrollments():
+    """List enrolled profiles. Reads data/enrollments/*.json metadata."""
+    import json as _json
+    out = []
+    d = _enrollments_dir()
+    if d.exists():
+        for f in sorted(d.glob("*.json")):
+            try:
+                rec = _json.loads(f.read_text(encoding="utf-8"))
+                out.append({
+                    "profile_id": rec["profile_id"],
+                    "adapter": rec["adapter"],
+                    "embedding_dim": rec["embedding_dim"],
+                    "saved_to": str(f),
+                    "enrolled_at": rec.get("enrolled_at", ""),
+                })
+            except Exception:
+                pass
+    return {"enrollments": out}
+
+
+@app.get("/api/enroll/{profile_id}/embedding")
+async def get_enrollment_embedding(profile_id: str):
+    """Return the raw embedding_b64 for a profile — used by the slow-loop
+    speaker_tag stage to feed verify_segments() without round-tripping
+    through the client."""
+    import json as _json
+    p = _enrollments_dir() / f"{profile_id}.json"
+    if not p.exists():
+        raise HTTPException(status_code=404,
+                            detail=f"profile {profile_id!r} not enrolled")
+    rec = _json.loads(p.read_text(encoding="utf-8"))
+    return {
+        "profile_id": rec["profile_id"],
+        "adapter": rec["adapter"],
+        "embedding_b64": rec["embedding_b64"],
+        "embedding_dim": rec["embedding_dim"],
+    }
+
+
 # ── Runs ──────────────────────────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
