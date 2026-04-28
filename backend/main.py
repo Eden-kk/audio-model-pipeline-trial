@@ -961,8 +961,120 @@ async def ws_run(websocket: WebSocket, run_id: str):
 #   {event: "StageCompleted", result: {text, words, ...}, latency_ms}
 #   {event: "StageFailed", error}
 
+# Plan D Stage A3 — cap captured-mic buffers at 5 minutes to bound RAM use
+# (16 kHz × 2 bytes × 300 s = 9.6 MB). Anything longer is almost certainly a
+# stuck/forgotten tab; we'd rather drop the save than OOM the server.
+MAX_MIC_CAPTURE_SECONDS = int(os.environ.get("MAX_MIC_CAPTURE_SECONDS", "300"))
+
+
+async def _save_streamed_clip(
+    pcm_buf: bytes,
+    *,
+    sample_rate: int,
+    vendor: str,
+    transcript: Optional[str] = None,
+    transcript_segments: Optional[list] = None,
+) -> Optional[str]:
+    """Persist a captured live-mic PCM stream as a corpus clip.
+
+    Builds a 16-bit mono WAV from the accumulated PCM buffer, writes it
+    via the standard storage/clips path, runs the audio auto-tagger
+    in-process, and returns the new clip_id. Returns None if the buffer
+    is too short (< 0.5 s) to be worth saving.
+
+    Plan D Stage A3 — A4 will plumb transcript into the manifest, A5
+    will add the ar-glass-capture / live-mic scenario tags.
+    """
+    if not pcm_buf:
+        return None
+    bytes_per_sec = sample_rate * 2   # 16-bit mono
+    duration_s = len(pcm_buf) / bytes_per_sec if bytes_per_sec else 0.0
+    if duration_s < 0.5:
+        return None
+    if duration_s > MAX_MIC_CAPTURE_SECONDS:
+        # Truncate rather than drop — the user might still want the early
+        # part. The transcript is already truncated at vendor-stop time.
+        pcm_buf = pcm_buf[: MAX_MIC_CAPTURE_SECONDS * bytes_per_sec]
+        duration_s = MAX_MIC_CAPTURE_SECONDS
+
+    # Wrap PCM s16le in a WAV header — soundfile is already a backend dep.
+    import io
+    import wave
+    import json as _json
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm_buf)
+    wav_bytes = wav_io.getvalue()
+
+    clip_id = new_clip_id()
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+    clip = Clip(
+        id=clip_id,
+        source="live-mic",
+        modality="audio",
+        original_filename=f"live-mic-{vendor}-{now[:19].replace(':','-')}.wav",
+        original_format="wav",
+        uploaded_by="",
+        created_at=now,
+        captured_transcript=transcript,
+        captured_transcript_segments=list(transcript_segments or []),
+    )
+    clip = save_clip(clip, wav_bytes, "wav")
+
+    # Read back metadata + run audio auto-tagger
+    canonical = audio_path(clip_id)
+    if canonical and canonical.exists():
+        try:
+            import soundfile as sf
+            info = sf.info(str(canonical))
+            clip.duration_s = float(info.duration)
+            clip.sample_rate = int(info.samplerate)
+            clip.channels = int(info.channels)
+        except Exception:
+            clip.duration_s = duration_s
+            clip.sample_rate = sample_rate
+            clip.channels = 1
+        try:
+            from ingest.auto_tag import apply_audio_tags
+            tags = await apply_audio_tags(
+                canonical,
+                duration_s=clip.duration_s,
+                run_lid=True,
+                run_speaker_count=True,
+            )
+            if tags.get("language"):
+                clip.language_detected = tags["language"]
+            if tags.get("snr_db") is not None:
+                clip.snr_db = float(tags["snr_db"])
+            if tags.get("speaker_count") is not None:
+                clip.speaker_count_estimate = int(tags["speaker_count"])
+            existing = set(clip.scenarios)
+            for s in tags.get("scenarios", []):
+                if s and s not in existing:
+                    clip.scenarios.append(s)
+                    existing.add(s)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "auto-tag failed for live-mic clip %s: %s", clip_id, e
+            )
+        # Re-write manifest with metadata + tags.
+        from storage.clips import _clip_dir   # type: ignore
+        (_clip_dir(clip_id) / "manifest.json").write_text(
+            _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+        )
+    return clip_id
+
+
 @app.websocket("/ws/mic")
-async def ws_mic(websocket: WebSocket, adapter: str, sample_rate: int = 16000):
+async def ws_mic(
+    websocket: WebSocket,
+    adapter: str,
+    sample_rate: int = 16000,
+    save: int = 0,
+):
     await websocket.accept()
     try:
         adapter_obj = registry.get(adapter)
@@ -981,10 +1093,14 @@ async def ws_mic(websocket: WebSocket, adapter: str, sample_rate: int = 16000):
         await websocket.close()
         return
 
+    save_to_corpus = bool(save)
+
     if adapter in ("deepgram",):
-        await _proxy_deepgram_mic(websocket, sample_rate, adapter_obj)
+        await _proxy_deepgram_mic(websocket, sample_rate, adapter_obj,
+                                  save_to_corpus=save_to_corpus)
     elif adapter in ("assemblyai",):
-        await _proxy_assemblyai_mic(websocket, sample_rate, adapter_obj)
+        await _proxy_assemblyai_mic(websocket, sample_rate, adapter_obj,
+                                    save_to_corpus=save_to_corpus)
     else:
         await websocket.send_json({
             "event": "StageFailed",
@@ -993,8 +1109,19 @@ async def ws_mic(websocket: WebSocket, adapter: str, sample_rate: int = 16000):
         await websocket.close()
 
 
-async def _proxy_deepgram_mic(client_ws: WebSocket, sample_rate: int, adapter_obj: Any) -> None:
-    """Forward PCM from client → Deepgram WS; translate Results frames back."""
+async def _proxy_deepgram_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+) -> None:
+    """Forward PCM from client → Deepgram WS; translate Results frames back.
+
+    When ``save_to_corpus`` is True we also accumulate every inbound PCM
+    frame into a buffer and persist it as a corpus clip on stop (Plan D
+    Stage A3). Audio-only for now; A4 plumbs the transcript through.
+    """
     import json as _json
     import websockets as wslib
 
@@ -1003,6 +1130,9 @@ async def _proxy_deepgram_mic(client_ws: WebSocket, sample_rate: int, adapter_ob
         await client_ws.send_json({"event": "StageFailed",
                                    "error": "DEEPGRAM_API_KEY not set"})
         await client_ws.close(); return
+
+    pcm_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
 
     params = {
         "model": "nova-3",
@@ -1047,6 +1177,8 @@ async def _proxy_deepgram_mic(client_ws: WebSocket, sample_rate: int, adapter_ob
                         return
                     if "bytes" in msg and msg["bytes"]:
                         await vendor_ws.send(msg["bytes"])
+                        if pcm_buf is not None and len(pcm_buf) < max_bytes:
+                            pcm_buf.extend(msg["bytes"])
                     elif "text" in msg and msg["text"]:
                         try:
                             ctrl = _json.loads(msg["text"])
@@ -1122,6 +1254,24 @@ async def _proxy_deepgram_mic(client_ws: WebSocket, sample_rate: int, adapter_ob
             },
             "is_streaming": True,
         })
+        # Plan D Stage A3 — persist captured audio as a corpus clip when
+        # the client opted in via ?save=1. Transcript plumbing comes in A4.
+        if pcm_buf is not None and len(pcm_buf) > 0:
+            try:
+                clip_id = await _save_streamed_clip(
+                    bytes(pcm_buf),
+                    sample_rate=sample_rate,
+                    vendor="deepgram",
+                )
+                if clip_id:
+                    await client_ws.send_json({
+                        "event": "ClipSaved",
+                        "clip_id": clip_id,
+                    })
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "deepgram mic save failed: %s", e
+                )
     except Exception as exc:
         await client_ws.send_json({
             "event": "StageFailed",
@@ -1133,8 +1283,18 @@ async def _proxy_deepgram_mic(client_ws: WebSocket, sample_rate: int, adapter_ob
         except Exception: pass
 
 
-async def _proxy_assemblyai_mic(client_ws: WebSocket, sample_rate: int, adapter_obj: Any) -> None:
-    """Forward PCM from client → AssemblyAI v3 streaming WS; translate Turn frames."""
+async def _proxy_assemblyai_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+) -> None:
+    """Forward PCM from client → AssemblyAI v3 streaming WS; translate Turn frames.
+
+    When ``save_to_corpus`` is True we accumulate PCM and persist as a clip
+    on stop (Plan D Stage A3).
+    """
     import json as _json
     import websockets as wslib
 
@@ -1143,6 +1303,9 @@ async def _proxy_assemblyai_mic(client_ws: WebSocket, sample_rate: int, adapter_
         await client_ws.send_json({"event": "StageFailed",
                                    "error": "ASSEMBLYAI_API_KEY not set"})
         await client_ws.close(); return
+
+    pcm_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
 
     url = (f"wss://streaming.assemblyai.com/v3/ws"
            f"?sample_rate={sample_rate}"
@@ -1174,6 +1337,8 @@ async def _proxy_assemblyai_mic(client_ws: WebSocket, sample_rate: int, adapter_
                         return
                     if "bytes" in msg and msg["bytes"]:
                         await vendor_ws.send(msg["bytes"])
+                        if pcm_buf is not None and len(pcm_buf) < max_bytes:
+                            pcm_buf.extend(msg["bytes"])
                     elif "text" in msg and msg["text"]:
                         try:
                             ctrl = _json.loads(msg["text"])
@@ -1250,6 +1415,23 @@ async def _proxy_assemblyai_mic(client_ws: WebSocket, sample_rate: int, adapter_
             },
             "is_streaming": True,
         })
+        # Plan D Stage A3 — persist captured audio when ?save=1.
+        if pcm_buf is not None and len(pcm_buf) > 0:
+            try:
+                clip_id = await _save_streamed_clip(
+                    bytes(pcm_buf),
+                    sample_rate=sample_rate,
+                    vendor="assemblyai",
+                )
+                if clip_id:
+                    await client_ws.send_json({
+                        "event": "ClipSaved",
+                        "clip_id": clip_id,
+                    })
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    "assemblyai mic save failed: %s", e
+                )
     except Exception as exc:
         await client_ws.send_json({
             "event": "StageFailed",
