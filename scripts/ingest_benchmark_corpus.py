@@ -207,9 +207,19 @@ ALL_CLIPS = (
 
 
 # ─── Auto-taggers ─────────────────────────────────────────────────────────────
-# Run on each clip during ingest so the user never has to manually tag.
-# Cheap heuristics — no external API calls. The trial app's adapter
-# library already gives proper detection if/when we want to swap.
+# Audio-derived tags now live in backend/ingest/auto_tag.py (Plan D Stage A1)
+# so the live /ws/mic save path can call the same code. Filename-only
+# heuristics (which need rel_path) stay here because they're ingest-specific.
+
+from ingest.auto_tag import (   # noqa: E402  -- sys.path patched above
+    detect_language_real as _detect_language_real_audio,
+    speech_ratio,
+    speech_ratio_bucket,
+    count_speakers_audio,
+    duration_bucket,
+    estimate_snr_db,
+)
+
 
 def derive_language_heuristic(rel_path: str) -> str:
     """Heuristic fallback: source-dir convention. Used only when real LID
@@ -220,42 +230,22 @@ def derive_language_heuristic(rel_path: str) -> str:
     return "en"
 
 
-# Lazy-loaded WhisperLIDAdapter singleton — loaded on first call.
-_LID_ADAPTER = None
-
-
-def _get_lid_adapter():
-    global _LID_ADAPTER
-    if _LID_ADAPTER is None:
-        from adapters.whisper_lid_adapter import WhisperLIDAdapter  # type: ignore
-        _LID_ADAPTER = WhisperLIDAdapter()
-    return _LID_ADAPTER
-
-
 async def detect_language_real(
     wav_path: Path, rel_path: str, *, min_confidence: float = 0.50
 ) -> Tuple[str, Optional[float]]:
-    """Run faster-whisper-tiny LID on the audio. Returns (lang_code, confidence).
+    """Audio LID with directory-heuristic fallback.
 
-    Falls back to the directory-name heuristic when the adapter fails or
-    when the model's confidence is below `min_confidence` (avoids
-    confidently mislabeling silence/noise clips)."""
-    try:
-        adapter = _get_lid_adapter()
-        out = await adapter.lid(str(wav_path), {})
-        lang = out.get("language")
-        conf = out.get("confidence")
-        if lang and conf is not None and conf >= min_confidence:
-            return str(lang), float(conf)
-        # Low confidence → fall back to source-dir heuristic
-        return derive_language_heuristic(rel_path), (
-            float(conf) if conf is not None else None
-        )
-    except Exception as e:
-        # Model load failure, missing dep, etc. — log + fall back
-        print(f"    [lid] fallback to heuristic ({type(e).__name__}: {e})",
-              file=sys.stderr)
-        return derive_language_heuristic(rel_path), None
+    Wraps the pure-audio detector from backend/ingest/auto_tag.py and
+    layers on a fall-back to derive_language_heuristic(rel_path) for the
+    curated corpus where the source-dir name is the labelled language.
+    """
+    lang, conf = await _detect_language_real_audio(
+        wav_path, min_confidence=min_confidence
+    )
+    if lang is not None and conf is not None and conf >= min_confidence:
+        return lang, conf
+    # Low confidence or detector failed → fall back to source-dir heuristic.
+    return derive_language_heuristic(rel_path), conf
 
 
 def derive_speaker_count(rel_path: str) -> int:
@@ -268,162 +258,6 @@ def derive_speaker_count(rel_path: str) -> int:
     if "_bab" in name or "_abab" in name or "_baba" in name or "_abba" in name:
         return 2
     return 1
-
-
-def speech_ratio(wav_path: Path) -> Optional[float]:
-    """Fraction of the clip that's voice activity (vs silence/noise).
-
-    Energy-based VAD: 30 ms frames, classify frame as speech if its RMS is
-    >= 2× the 10th-percentile noise floor. Crude but robust on the
-    curated clips. Returns None on read errors so the caller can skip.
-    """
-    import wave
-    import numpy as np
-
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            sr = wf.getframerate()
-            sw = wf.getsampwidth()
-            ch = wf.getnchannels()
-            raw = wf.readframes(wf.getnframes())
-    except Exception:
-        return None
-    if sw != 2:
-        return None
-    samples = np.frombuffer(raw, dtype=np.int16)
-    if ch > 1:
-        samples = samples.reshape(-1, ch).mean(axis=1)
-    samples = samples.astype(np.float32) / 32768.0
-
-    frame_len = max(1, int(sr * 0.030))   # 30 ms
-    n_full = (samples.size // frame_len) * frame_len
-    if n_full == 0:
-        return None
-    frames = samples[:n_full].reshape(-1, frame_len)
-    rms = np.sqrt(np.maximum((frames ** 2).mean(axis=1), 1e-12))
-
-    noise_floor = float(np.percentile(rms, 10))
-    threshold = max(noise_floor * 2.0, 1e-4)
-    speech_frames = int((rms > threshold).sum())
-    return float(round(speech_frames / len(rms), 3))
-
-
-def speech_ratio_bucket(ratio: Optional[float]) -> Optional[str]:
-    if ratio is None:
-        return None
-    if ratio >= 0.80:
-        return "mostly-speech"
-    if ratio >= 0.40:
-        return "partial-speech"
-    return "mostly-silence"
-
-
-# Lazy Resemblyzer encoder for sliding-window speaker counting.
-_RES_ENCODER = None
-
-
-def count_speakers_audio(
-    wav_path: Path, *, threshold: float = 0.70
-) -> Optional[int]:
-    """Count distinct speakers via Resemblyzer windowed embeddings + greedy
-    cosine clustering.  Window size = 1.6 s, hop = 0.4 s (Resemblyzer's
-    own embed_utterance partials).
-
-    Returns 1 / 2 / 3+ for clean clips. Returns None on failure
-    (clip too short, encoder not available, etc.) — caller falls back
-    to the filename heuristic.
-    """
-    global _RES_ENCODER
-    try:
-        import numpy as np
-        from resemblyzer import VoiceEncoder, preprocess_wav   # type: ignore[import]
-    except Exception:
-        return None
-    try:
-        if _RES_ENCODER is None:
-            _RES_ENCODER = VoiceEncoder(verbose=False)
-
-        wav = preprocess_wav(str(wav_path))
-        # < ~3 s of speech can't be split into reliable partials
-        if len(wav) < 16000 * 2:
-            return 1
-
-        _, partials, _ = _RES_ENCODER.embed_utterance(
-            wav, return_partials=True, rate=2
-        )
-        if len(partials) < 2:
-            return 1
-
-        # Greedy single-pass clustering: each partial is merged into the
-        # nearest existing centroid if cosine sim >= threshold; else
-        # spawns a new cluster.
-        centroids = [partials[0]]
-        for p in partials[1:]:
-            sims = []
-            for c in centroids:
-                denom = float(np.linalg.norm(p) * np.linalg.norm(c))
-                sims.append(float(np.dot(p, c) / denom) if denom > 0 else 0.0)
-            best = max(sims)
-            if best >= threshold:
-                idx = sims.index(best)
-                # running-average update
-                centroids[idx] = (centroids[idx] + p) / 2.0
-            else:
-                centroids.append(p)
-        return min(len(centroids), 5)   # cap at 5; we don't use higher
-    except Exception:
-        return None
-
-
-def duration_bucket(duration_s: Optional[float]) -> Optional[str]:
-    if duration_s is None:
-        return None
-    if duration_s < 5.0:
-        return "short"
-    if duration_s < 15.0:
-        return "medium"
-    return "long-form"
-
-
-def estimate_snr_db(wav_path: Path) -> float:
-    """Energy-based SNR estimate.
-
-    Splits the wav into 50 ms frames, computes RMS per frame, then
-    20·log10(p90 / p10). The 90th-percentile-loud frame is treated as
-    'speech', the 10th-percentile-quiet as 'noise'. Crude but robust
-    enough to bucket clean (>15 dB) vs noisy (<10 dB) reliably.
-    """
-    import wave
-    import numpy as np
-
-    with wave.open(str(wav_path), "rb") as wf:
-        sr = wf.getframerate()
-        sw = wf.getsampwidth()
-        n  = wf.getnframes()
-        ch = wf.getnchannels()
-        raw = wf.readframes(n)
-
-    if sw != 2:
-        return float("nan")
-    samples = np.frombuffer(raw, dtype=np.int16)
-    if ch > 1:
-        samples = samples.reshape(-1, ch).mean(axis=1)
-    samples = samples.astype(np.float32) / 32768.0
-
-    frame_len = max(1, int(sr * 0.050))     # 50 ms
-    n_full = (samples.size // frame_len) * frame_len
-    if n_full == 0:
-        return float("nan")
-    frames = samples[:n_full].reshape(-1, frame_len)
-    rms = np.sqrt(np.maximum((frames ** 2).mean(axis=1), 1e-12))
-
-    p90 = float(np.percentile(rms, 90))
-    p10 = float(np.percentile(rms, 10))
-    if p10 < 1e-9:
-        # Effectively silence in the quiet frames → cap SNR
-        return 60.0
-    snr = 20.0 * (np.log10(p90) - np.log10(p10))
-    return float(round(snr, 1))
 
 
 # ─── Ingest helpers ──────────────────────────────────────────────────────────
