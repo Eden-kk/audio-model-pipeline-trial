@@ -1,10 +1,57 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'node:url'
+import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
+
+// Vite plugin: serve ORT's wasm worker .mjs files from
+// node_modules/onnxruntime-web/dist/ when the prebundled chunks request
+// them via /node_modules/.vite/deps/ort-wasm-simd-threaded(.jsep)?.mjs.
+//
+// Why we need this: esbuild's optimizeDeps prebundles vad-web + ORT but
+// leaves the wasm worker .mjs files behind — they're not statically
+// imported, only dynamically. The prebundled chunk does
+// `import('./ort-wasm-simd-threaded.mjs?import')` against `.vite/deps/`,
+// the file isn't there, and we get a 404 ("Failed to fetch dynamically
+// imported module"). This plugin makes those URLs resolve to the real
+// files inside node_modules.
+function ortWasmWorkerPlugin(): Plugin {
+  const ortDistDir = fileURLToPath(
+    new URL('./node_modules/onnxruntime-web/dist/', import.meta.url),
+  )
+  return {
+    name: 'ort-wasm-worker',
+    enforce: 'pre',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = (req.url || '').split('?')[0]
+        // Match /node_modules/.vite/deps/ort-wasm-simd-threaded[.jsep|.jspi|.asyncify].mjs
+        const m = url.match(
+          /\/node_modules\/\.vite\/deps\/(ort-wasm-simd-threaded(?:\.[a-z]+)?\.(?:mjs|wasm))$/,
+        )
+        if (!m) return next()
+        const filePath = path.join(ortDistDir, m[1])
+        if (!existsSync(filePath)) return next()
+        readFile(filePath)
+          .then((buf) => {
+            res.setHeader(
+              'Content-Type',
+              filePath.endsWith('.wasm')
+                ? 'application/wasm'
+                : 'application/javascript',
+            )
+            res.end(buf)
+          })
+          .catch(next)
+      })
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), ortWasmWorkerPlugin()],
   // Force every import of `onnxruntime-web` (whether from our
   // turnDetector.ts or transitively from vad-web's CJS chain) to resolve
   // to a self-contained ESM bundle. Without this alias, esbuild's
