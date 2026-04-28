@@ -582,6 +582,322 @@ async def ws_run(websocket: WebSocket, run_id: str):
         _ws_connections.pop(run_id, None)
 
 
+# ─── Live-mic streaming (Slice 4) ──────────────────────────────────────────────
+# Bidirectional WS proxy: the browser sends Int16 PCM @ 16 kHz, we forward it
+# to the vendor's streaming WS, and translate the vendor's partial-transcript
+# events back into our common StageProgress / StageCompleted shape.
+#
+# Client protocol (frontend):
+#   binary frames  = raw PCM s16le (any chunk size)
+#   text frames    = JSON control:
+#                      {"type": "stop"}
+#
+# Server emits to client:
+#   {event: "StageStarted", adapter, ...}
+#   {event: "StageProgress", partial_text, partial_index}
+#   {event: "StageCompleted", result: {text, words, ...}, latency_ms}
+#   {event: "StageFailed", error}
+
+@app.websocket("/ws/mic")
+async def ws_mic(websocket: WebSocket, adapter: str, sample_rate: int = 16000):
+    await websocket.accept()
+    try:
+        adapter_obj = registry.get(adapter)
+    except KeyError:
+        await websocket.send_json({"event": "StageFailed",
+                                   "error": f"Adapter {adapter!r} not registered"})
+        await websocket.close()
+        return
+
+    if not getattr(adapter_obj, "is_streaming", False):
+        await websocket.send_json({
+            "event": "StageFailed",
+            "error": f"Adapter {adapter!r} is not streaming-capable; "
+                     f"use POST /api/runs for batch adapters",
+        })
+        await websocket.close()
+        return
+
+    if adapter in ("deepgram",):
+        await _proxy_deepgram_mic(websocket, sample_rate, adapter_obj)
+    elif adapter in ("assemblyai",):
+        await _proxy_assemblyai_mic(websocket, sample_rate, adapter_obj)
+    else:
+        await websocket.send_json({
+            "event": "StageFailed",
+            "error": f"Adapter {adapter!r} has no mic-streaming proxy yet",
+        })
+        await websocket.close()
+
+
+async def _proxy_deepgram_mic(client_ws: WebSocket, sample_rate: int, adapter_obj: Any) -> None:
+    """Forward PCM from client → Deepgram WS; translate Results frames back."""
+    import json as _json
+    import websockets as wslib
+
+    api_key = os.environ.get("DEEPGRAM_API_KEY", "")
+    if not api_key:
+        await client_ws.send_json({"event": "StageFailed",
+                                   "error": "DEEPGRAM_API_KEY not set"})
+        await client_ws.close(); return
+
+    params = {
+        "model": "nova-3",
+        "language": "en",
+        "encoding": "linear16",
+        "sample_rate": str(sample_rate),
+        "channels": "1",
+        "smart_format": "true",
+        "punctuate": "true",
+        "interim_results": "true",
+    }
+    url = "wss://api.deepgram.com/v1/listen?" + "&".join(
+        f"{k}={v}" for k, v in params.items()
+    )
+
+    t0 = time.perf_counter()
+    final_segments: list = []
+    latest_partial = ""
+    full_words: list = []
+    partial_count = 0
+    stopped = False
+
+    try:
+        async with wslib.connect(
+            url,
+            additional_headers={"Authorization": f"Token {api_key}"},
+            max_size=None,
+        ) as vendor_ws:
+            await client_ws.send_json({
+                "event": "StageStarted",
+                "adapter": "deepgram",
+                "sample_rate": sample_rate,
+            })
+
+            async def client_to_vendor() -> None:
+                """Pump bytes from browser → Deepgram, until client says stop."""
+                nonlocal stopped
+                while True:
+                    msg = await client_ws.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        stopped = True
+                        return
+                    if "bytes" in msg and msg["bytes"]:
+                        await vendor_ws.send(msg["bytes"])
+                    elif "text" in msg and msg["text"]:
+                        try:
+                            ctrl = _json.loads(msg["text"])
+                        except Exception:
+                            continue
+                        if ctrl.get("type") == "stop":
+                            stopped = True
+                            await vendor_ws.send(_json.dumps({"type": "CloseStream"}))
+                            return
+
+            async def vendor_to_client() -> None:
+                nonlocal partial_count, latest_partial
+                async for raw in vendor_ws:
+                    if isinstance(raw, bytes):
+                        continue
+                    try:
+                        msg = _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        continue
+                    if msg.get("type") != "Results":
+                        continue
+                    alts = msg.get("channel", {}).get("alternatives", [])
+                    if not alts:
+                        continue
+                    alt = alts[0]
+                    text = alt.get("transcript", "") or ""
+                    is_final = bool(msg.get("is_final"))
+                    if is_final and text:
+                        final_segments.append(text)
+                        latest_partial = ""
+                        for w in alt.get("words", []) or []:
+                            full_words.append({
+                                "word": w.get("word", ""),
+                                "start": float(w.get("start", 0.0)),
+                                "end": float(w.get("end", 0.0)),
+                                "confidence": w.get("confidence"),
+                            })
+                    else:
+                        latest_partial = text
+                    accumulated = " ".join(final_segments)
+                    if latest_partial:
+                        accumulated = (accumulated + " " + latest_partial).strip()
+                    partial_count += 1
+                    await client_ws.send_json({
+                        "event": "StageProgress",
+                        "partial_text": accumulated,
+                        "partial_index": partial_count,
+                    })
+
+            send_task = asyncio.create_task(client_to_vendor())
+            recv_task = asyncio.create_task(vendor_to_client())
+            done, pending = await asyncio.wait(
+                {send_task, recv_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try: await t
+                except Exception: pass
+
+        full_text = " ".join(final_segments).strip()
+        wall_s = time.perf_counter() - t0
+        await client_ws.send_json({
+            "event": "StageCompleted",
+            "adapter": "deepgram",
+            "latency_ms": wall_s * 1000.0,
+            "result": {
+                "text": full_text,
+                "words": full_words,
+                "language": "en",
+                "wall_time_s": wall_s,
+            },
+            "is_streaming": True,
+        })
+    except Exception as exc:
+        await client_ws.send_json({
+            "event": "StageFailed",
+            "adapter": "deepgram",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    finally:
+        try: await client_ws.close()
+        except Exception: pass
+
+
+async def _proxy_assemblyai_mic(client_ws: WebSocket, sample_rate: int, adapter_obj: Any) -> None:
+    """Forward PCM from client → AssemblyAI v3 streaming WS; translate Turn frames."""
+    import json as _json
+    import websockets as wslib
+
+    api_key = os.environ.get("ASSEMBLYAI_API_KEY", "")
+    if not api_key:
+        await client_ws.send_json({"event": "StageFailed",
+                                   "error": "ASSEMBLYAI_API_KEY not set"})
+        await client_ws.close(); return
+
+    url = (f"wss://streaming.assemblyai.com/v3/ws"
+           f"?sample_rate={sample_rate}"
+           f"&speech_model=universal-streaming-english"
+           f"&format_turns=true")
+
+    t0 = time.perf_counter()
+    finalized_turns: list = []
+    unfmt_partial = ""
+    all_words: list = []
+    partial_count = 0
+
+    try:
+        async with wslib.connect(
+            url,
+            additional_headers={"Authorization": api_key},
+            max_size=None,
+        ) as vendor_ws:
+            await client_ws.send_json({
+                "event": "StageStarted",
+                "adapter": "assemblyai",
+                "sample_rate": sample_rate,
+            })
+
+            async def client_to_vendor() -> None:
+                while True:
+                    msg = await client_ws.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        return
+                    if "bytes" in msg and msg["bytes"]:
+                        await vendor_ws.send(msg["bytes"])
+                    elif "text" in msg and msg["text"]:
+                        try:
+                            ctrl = _json.loads(msg["text"])
+                        except Exception:
+                            continue
+                        if ctrl.get("type") == "stop":
+                            await vendor_ws.send(_json.dumps({"type": "Terminate"}))
+                            return
+
+            async def vendor_to_client() -> None:
+                nonlocal partial_count, unfmt_partial
+                async for raw in vendor_ws:
+                    if isinstance(raw, bytes):
+                        continue
+                    try:
+                        msg = _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        continue
+                    mtype = msg.get("type")
+                    if mtype in ("Begin",):
+                        continue
+                    if mtype == "Termination":
+                        return
+                    if mtype != "Turn":
+                        continue
+                    transcript = msg.get("transcript", "") or ""
+                    end_of_turn = bool(msg.get("end_of_turn"))
+                    is_formatted = bool(msg.get("turn_is_formatted"))
+                    if end_of_turn and is_formatted:
+                        if transcript:
+                            finalized_turns.append(transcript)
+                        unfmt_partial = ""
+                        for w in msg.get("words", []) or []:
+                            all_words.append({
+                                "word": w.get("text", ""),
+                                "start": float(w.get("start", 0)) / 1000.0,
+                                "end": float(w.get("end", 0)) / 1000.0,
+                            })
+                    else:
+                        unfmt_partial = transcript
+                    accumulated = " ".join(finalized_turns)
+                    if unfmt_partial:
+                        accumulated = (accumulated + " " + unfmt_partial).strip()
+                    partial_count += 1
+                    await client_ws.send_json({
+                        "event": "StageProgress",
+                        "partial_text": accumulated,
+                        "partial_index": partial_count,
+                    })
+
+            send_task = asyncio.create_task(client_to_vendor())
+            recv_task = asyncio.create_task(vendor_to_client())
+            done, pending = await asyncio.wait(
+                {send_task, recv_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try: await t
+                except Exception: pass
+
+        full_text = " ".join(finalized_turns).strip()
+        wall_s = time.perf_counter() - t0
+        await client_ws.send_json({
+            "event": "StageCompleted",
+            "adapter": "assemblyai",
+            "latency_ms": wall_s * 1000.0,
+            "result": {
+                "text": full_text,
+                "words": all_words,
+                "language": "en",
+                "wall_time_s": wall_s,
+            },
+            "is_streaming": True,
+        })
+    except Exception as exc:
+        await client_ws.send_json({
+            "event": "StageFailed",
+            "adapter": "assemblyai",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    finally:
+        try: await client_ws.close()
+        except Exception: pass
+
+
 # ─── Static frontend mount (production, MUST be last) ────────────────────────
 # In docker-compose deploys the multi-stage Dockerfile bakes
 # frontend/dist into /app/frontend_dist. When that directory exists we
