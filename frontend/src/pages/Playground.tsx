@@ -270,28 +270,37 @@ export default function Playground() {
           setStatusMsg('Done')
           wsCleanup?.()
 
-          // Defensive reconcile: fetch the canonical run record from REST.
-          // The WS path occasionally lands without a complete result.text
-          // (we've seen the streaming `partial_text` accumulator fall a few
-          // chunks short on long clips when buffer-replay & live frames
-          // interleave). The saved run always has the full text — pull it
-          // and overwrite if it's longer than what we just rendered.
-          getRun(run.id).then((authoritative) => {
-            const canonical = (authoritative.result?.text ?? '').trim()
-            const have = (collected[0]?.transcript ?? '').trim()
-            if (canonical && canonical.length > have.length) {
-              collected[0] = {
-                ...collected[0],
-                transcript: canonical,
-                latency_ms: authoritative.latency_ms ?? collected[0].latency_ms,
-                raw_response: authoritative.result?.raw_response
-                           ?? authoritative.result
-                           ?? collected[0].raw_response,
-                is_final: true,
-              }
-              setResults([...collected])
-            }
-          }).catch(() => { /* best-effort */ })
+          // Defensive reconcile: fetch the canonical run record from REST
+          // and force-overwrite the transcript. The WS path occasionally
+          // lands the user a stale partial (we've seen Deepgram's accumulator
+          // fall short on long clips); the saved run always has the full
+          // text. Functional setResults to avoid stale-closure issues, and
+          // a 250 ms delay so append_run() definitely lands first.
+          const reconcileRunId = run.id
+          window.setTimeout(() => {
+            getRun(reconcileRunId).then((authoritative) => {
+              const canonical = (authoritative.result?.text ?? '').trim()
+              if (!canonical) return
+              setResults((prev) => {
+                const head = prev[0] ?? {
+                  stage_id: selectedAdapter,
+                  is_streaming: true,
+                }
+                if ((head.transcript ?? '').trim() === canonical) {
+                  return prev   // already shows the canonical text
+                }
+                return [{
+                  ...head,
+                  transcript: canonical,
+                  latency_ms: authoritative.latency_ms ?? head.latency_ms,
+                  raw_response: authoritative.result?.raw_response
+                             ?? authoritative.result
+                             ?? head.raw_response,
+                  is_final: true,
+                }]
+              })
+            }).catch(() => { /* best-effort */ })
+          }, 250)
         }
 
         if (etype === 'StageFailed') {

@@ -70,7 +70,12 @@ export default function MicStream({ adapter, onEvent, disabled = false }: Props)
     <div className="flex flex-col gap-1.5">
       <button
         type="button"
-        disabled={disabled}
+        // Once streaming has started, the button doubles as Stop and MUST
+        // remain clickable even when the parent flips a "busy" flag (which
+        // happens the moment StageStarted fires and the parent sets
+        // runState='running'). Only respect `disabled` when the user is
+        // about to *start* a fresh stream.
+        disabled={disabled && !streaming}
         onClick={streaming ? stop : start}
         className={cx(
           'btn-pill',
