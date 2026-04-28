@@ -68,7 +68,10 @@ for mod_path, cls_name in _ADAPTERS:
         )
 
 # ─── Storage ──────────────────────────────────────────────────────────────────
-from storage.clips import Clip, audio_path, get_clip, list_clips, new_clip_id, save_clip
+from storage.clips import (
+    Clip, FFmpegMissingError, audio_path, get_clip, list_clips,
+    new_clip_id, save_clip, source_path,
+)
 from storage.runs import Run, append_run, get_run, new_run_id
 
 # ─── App ──────────────────────────────────────────────────────────────────────
@@ -132,6 +135,8 @@ class ClipOut(BaseModel):
     modality: str
     filename: str
     format: str
+    original_filename: str = ""
+    original_format: str = ""
     duration_s: float
     sample_rate: int
     channels: int
@@ -150,40 +155,53 @@ async def upload_clip(
     source: str = Form("upload"),
     uploaded_by: str = Form(""),
 ):
-    audio_bytes = await file.read()
-    filename = file.filename or "audio.wav"
-    ext = Path(filename).suffix.lstrip(".").lower() or "wav"
+    """Accept an audio OR video file. Video containers (.mp4, .mov, .webm, .mkv,
+    .avi, .m4v, .ts, .mts) get their audio track extracted to wav-16k-mono via
+    ffmpeg; the original is kept adjacent for reference. Adapters always read
+    the canonical wav.
+    """
+    upload_bytes = await file.read()
+    original_filename = file.filename or "audio.wav"
+    ext = Path(original_filename).suffix.lstrip(".").lower() or "wav"
 
     clip_id = new_clip_id()
     now = datetime.datetime.utcnow().isoformat() + "Z"
-
-    # Best-effort metadata extraction (soundfile for WAV/FLAC/OGG; skip on error)
-    duration_s = 0.0
-    sample_rate = 0
-    channels = 1
-    try:
-        import io
-        import soundfile as sf
-        info = sf.info(io.BytesIO(audio_bytes))
-        duration_s = float(info.duration)
-        sample_rate = int(info.samplerate)
-        channels = int(info.channels)
-    except Exception:
-        pass
 
     clip = Clip(
         id=clip_id,
         source=source,
         modality="audio",
-        filename=filename,
-        format=ext,
-        duration_s=duration_s,
-        sample_rate=sample_rate,
-        channels=channels,
+        original_filename=original_filename,
+        original_format=ext,
         uploaded_by=uploaded_by,
         created_at=now,
     )
-    clip = save_clip(clip, audio_bytes, ext)
+    try:
+        clip = save_clip(clip, upload_bytes, ext)
+    except FFmpegMissingError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except RuntimeError as e:
+        # Bad/unreadable container, ffmpeg failure, etc.
+        raise HTTPException(status_code=400,
+                            detail=f"could not extract audio: {e}")
+
+    # Read metadata from the CANONICAL audio (post-extraction for video).
+    canonical = audio_path(clip_id)
+    if canonical and canonical.exists():
+        try:
+            import soundfile as sf
+            info = sf.info(str(canonical))
+            clip.duration_s = float(info.duration)
+            clip.sample_rate = int(info.samplerate)
+            clip.channels = int(info.channels)
+        except Exception:
+            pass
+        # Re-write manifest with the metadata filled in.
+        from storage.clips import _clip_dir   # type: ignore
+        import json as _json
+        (_clip_dir(clip_id) / "manifest.json").write_text(
+            _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+        )
     return ClipOut(**clip.to_dict())
 
 

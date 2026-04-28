@@ -6,7 +6,17 @@ interface Props {
   disabled?: boolean
 }
 
-const ACCEPTED = ['audio/wav', 'audio/wave', 'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/webm', 'audio/flac', 'audio/x-flac', 'audio/mp4']
+// Accept audio AND video container files. Video uploads have their audio
+// track extracted server-side via ffmpeg in /api/clips, so the canonical
+// audio that adapters see is always 16 kHz mono PCM regardless of source.
+const ACCEPTED = [
+  'audio/wav', 'audio/wave', 'audio/mpeg', 'audio/mp3', 'audio/ogg',
+  'audio/webm', 'audio/flac', 'audio/x-flac', 'audio/mp4',
+  'video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska',
+  'video/x-msvideo', 'video/mpeg',
+]
+const VIDEO_EXT_RE = /\.(mp4|mov|webm|mkv|avi|m4v|ts|mts)$/i
+const AUDIO_EXT_RE = /\.(wav|mp3|ogg|webm|flac|m4a|opus|aac)$/i
 
 function fileToBlob(file: File): Promise<{ blob: Blob; mime: string }> {
   return new Promise((resolve) => {
@@ -29,7 +39,11 @@ export default function AudioFileDrop({ onBlob, disabled = false }: Props) {
   const handleFile = useCallback(
     async (file: File) => {
       setError(null)
-      if (!ACCEPTED.some((t) => file.type.startsWith(t.split(';')[0])) && !file.name.match(/\.(wav|mp3|ogg|webm|flac|m4a|opus)$/i)) {
+      const matches =
+        ACCEPTED.some((t) => file.type.startsWith(t.split(';')[0])) ||
+        AUDIO_EXT_RE.test(file.name) ||
+        VIDEO_EXT_RE.test(file.name)
+      if (!matches) {
         setError(`Unsupported file type: ${file.type || file.name}`)
         return
       }
@@ -74,14 +88,14 @@ export default function AudioFileDrop({ onBlob, disabled = false }: Props) {
       {fileName ? (
         <span className="text-sm text-indigo-300">{fileName}</span>
       ) : (
-        <span className="text-sm text-gray-400">Drag & drop an audio file, or click to browse</span>
+        <span className="text-sm text-gray-400">Drag & drop an audio or video file, or click to browse</span>
       )}
-      <span className="text-xs text-gray-600">WAV · MP3 · OGG · WebM · FLAC</span>
+      <span className="text-xs text-gray-600">Audio: WAV · MP3 · OGG · FLAC · M4A — Video: MP4 · MOV · WebM · MKV (audio track auto-extracted)</span>
       {error && <p className="text-red-400 text-xs">{error}</p>}
       <input
         ref={inputRef}
         type="file"
-        accept="audio/*"
+        accept="audio/*,video/*,.mp4,.mov,.webm,.mkv,.avi,.m4v,.m4a,.opus,.aac,.flac"
         className="hidden"
         onChange={onInputChange}
         disabled={disabled}
