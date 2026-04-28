@@ -5,6 +5,11 @@ import { cx } from '../lib/cx'
 interface Props {
   adapter: string
   onEvent: (ev: MicStreamEvent) => void
+  /** Fires the moment the user clicks Stop (locally). Lets the parent
+   *  drop out of its "running" state immediately so the start button
+   *  is re-enabled — without waiting for the backend's StageCompleted
+   *  to arrive (which can lag 200-500 ms). */
+  onLocalStop?: () => void
   disabled?: boolean
 }
 
@@ -18,7 +23,7 @@ interface Props {
  *  in (so the user can build the AR-glass benchmark by speaking into the
  *  mic). The clip_id arrives in a `ClipSaved` event and gets surfaced
  *  inline so the user can jump to the new corpus row. */
-export default function MicStream({ adapter, onEvent, disabled = false }: Props) {
+export default function MicStream({ adapter, onEvent, onLocalStop, disabled = false }: Props) {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [seconds, setSeconds] = useState(0)
@@ -69,6 +74,7 @@ export default function MicStream({ adapter, onEvent, disabled = false }: Props)
     handleRef.current = null
     setStreaming(false)
     setSeconds(0)
+    onLocalStop?.()
   }
 
   const label = streaming ? `Stop (${seconds}s)` : 'Stream from mic'

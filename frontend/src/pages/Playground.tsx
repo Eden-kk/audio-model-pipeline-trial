@@ -496,6 +496,23 @@ export default function Playground() {
               <MicStream
                 adapter={selectedAdapter}
                 disabled={busy}
+                // The user clicking Stop in MicStream resets its internal
+                // `streaming` flag immediately, but our `runState` would stay
+                // 'running' until the backend's StageCompleted arrives 200-
+                // 500 ms later — leaving the start button disabled in the
+                // meantime. Mirror the local-stop here so the user can kick
+                // off another stream right away.
+                onLocalStop={() => {
+                  if (runState === 'running') {
+                    setRunState('done')
+                    setStatusMsg('Done')
+                    setResults((prev) => {
+                      if (prev.length === 0) return prev
+                      const head = prev[0]
+                      return [{ ...head, is_final: true }]
+                    })
+                  }
+                }}
                 onEvent={(ev) => {
                   setEvents((prev) => [...prev, ev])
                   if (ev.event === 'StageStarted') {
