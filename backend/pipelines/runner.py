@@ -18,9 +18,29 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json as _json
+import os
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+
+def _load_enrolled_embedding(profile_id: str = "wearer") -> Optional[str]:
+    """Return embedding_b64 saved by POST /api/enroll, or None if missing.
+
+    Looks at $DATA_DIR/enrollments/<profile_id>.json — the same file the
+    Slice 9.1e endpoint writes. Multi-profile (Plan A familiar voices)
+    will pick a different profile_id; v1 uses 'wearer' by default.
+    """
+    base = Path(os.environ.get("DATA_DIR", "data"))
+    p = base / "enrollments" / f"{profile_id}.json"
+    if not p.exists():
+        return None
+    try:
+        rec = _json.loads(p.read_text(encoding="utf-8"))
+        return rec.get("embedding_b64")
+    except Exception:
+        return None
 
 
 # ── Port-compatibility table (what upstream output can feed into what
@@ -164,12 +184,23 @@ async def run_pipeline(
                 upstream_language = result.get("language")
 
             elif category == "speaker_verify":
+                # Resolve the enrolled embedding from one of three sources,
+                # in priority order:
+                #   1. config.enrolled_embedding_b64 (inline, explicit)
+                #   2. config.profile_id              (load from disk)
+                #   3. default profile 'wearer'       (load from disk)
                 emb = config.get("enrolled_embedding_b64")
                 if not emb:
-                    raise StageError(
-                        "speaker_verify stage requires "
-                        "config.enrolled_embedding_b64 (run /api/enroll first)"
-                    )
+                    profile_id = config.get("profile_id", "wearer")
+                    emb = _load_enrolled_embedding(profile_id)
+                    if not emb:
+                        raise StageError(
+                            f"speaker_verify stage needs an enrolled embedding. "
+                            f"Either pass config.enrolled_embedding_b64 inline, "
+                            f"or POST /api/enroll first to save profile "
+                            f"'{profile_id}' to disk (no enrollment file at "
+                            f"data/enrollments/{profile_id}.json)."
+                        )
                 if upstream_audio_path is None:
                     raise StageError("speaker_verify stage requires audio")
                 # `mode: 'segments'` (slow-loop) → per-segment user-tag;
