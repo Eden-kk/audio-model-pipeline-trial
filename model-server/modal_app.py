@@ -37,9 +37,24 @@ image = (
     .apt_install("libsndfile1", "ffmpeg", "build-essential", "libsox-dev")
     .pip_install("Cython<3", "numpy<2")
     .pip_install(
-        "torch==2.4.0", "torchaudio==2.4.0",
+        # NeMo 2.5.1's transitive dep nvidia-modelopt requires torch>=2.6.
+        # 2.6 keeps Parakeet/Canary-1B working and exposes fully_shard at
+        # the path NeMo 2.5 expects without our compatibility shim.
+        "torch==2.6.0", "torchaudio==2.6.0",
         "pyarrow==15.0.2",
-        "nemo_toolkit[asr]==2.0.0",
+        # NeMo 2.4.0 brings the `canary2` prompt formatter (Canary-1B-flash)
+        # and `nemo.collections.speechlm2` (Canary-Qwen-2.5B's SALM model).
+        # 2.5+ ships the `qwen` prompt formatter that Canary-Qwen-2.5B's
+        # cfg.prompt_format references. 2.4 errors out with "Unknown
+        # prompt formatter: 'qwen'".
+        "nemo_toolkit[all]==2.5.1",
+        # speechlm2.SALM (Canary-Qwen) drags many training-time deps in
+        # via its __init__ chain (seaborn, sacrebleu, lightning, …) — [all]
+        # is the only extras combo that includes them all.
+        "sacrebleu",
+        "seaborn",
+        "lightning>=2.4",
+        "transformers>=4.45",
         "fastapi[standard]==0.115.4",
         "uvicorn[standard]==0.32.0",
         "soundfile",

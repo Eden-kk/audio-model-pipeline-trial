@@ -30,6 +30,9 @@ class AssemblyAIAdapter:
     config_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
+            "speech_model": {"type": "string", "default": "universal-2",
+                             "enum": ["universal-2", "universal-3-pro"],
+                             "description": "AssemblyAI v2/transcript requires a speech_model."},
             "language": {"type": "string", "default": "en"},
             "speaker_labels": {"type": "boolean", "default": True},
         },
@@ -45,6 +48,7 @@ class AssemblyAIAdapter:
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         language = config.get("language", "en")
         speaker_labels = bool(config.get("speaker_labels", True))
+        speech_model = config.get("speech_model", "universal-2")
 
         t0 = time.perf_counter()
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -53,12 +57,17 @@ class AssemblyAIAdapter:
             r1.raise_for_status()
             audio_url = r1.json()["upload_url"]
 
-            body = {"audio_url": audio_url, "speaker_labels": speaker_labels}
+            body = {
+                "audio_url": audio_url,
+                "speech_models": [speech_model],  # API expects a list
+                "speaker_labels": speaker_labels,
+            }
             if language and language != "auto":
                 body["language_code"] = language
             r2 = await client.post(_TRANSCRIPT, headers={**self._hdr(),
                                    "content-type": "application/json"}, json=body)
-            r2.raise_for_status()
+            if r2.status_code >= 400:
+                raise RuntimeError(f"AssemblyAI {r2.status_code}: {r2.text[:300]}")
             tid = r2.json()["id"]
 
             for _ in range(120):
