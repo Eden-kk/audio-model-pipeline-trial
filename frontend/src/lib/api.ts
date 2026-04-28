@@ -47,20 +47,31 @@ export interface Clip {
   created_at: string
 }
 
+/**
+ * Mirrors backend.main.RunOut. The synchronous run response carries the full
+ * adapter result inside `result`; WS events are only emitted for streaming
+ * runs (Slice 3+). Always prefer this response as the source of truth.
+ */
 export interface Run {
   id: string
-  pipeline_id: string
   clip_id: string
+  adapter: string
+  config: Record<string, unknown>
   started_at: string
   finished_at: string | null
-  per_stage_timings: Record<string, { latency_ms: number; cost_usd: number }>
-  per_stage_io: Record<string, { input_preview: string; output_preview: string; raw_response: unknown }>
-  metrics: {
-    wer?: number
-    eer?: number
-    mos?: number
-    total_latency_ms: number
-    total_cost_usd: number
+  latency_ms: number | null
+  cost_usd: number | null
+  input_preview: string
+  output_preview: string
+  result: {
+    text?: string
+    words?: Array<{ word: string; start: number; end: number; confidence?: number; speaker?: string | null }>
+    language?: string
+    duration_s?: number
+    cost_usd?: number
+    wall_time_s?: number
+    raw_response?: unknown
+    [k: string]: unknown
   }
   error: string | null
 }
