@@ -270,6 +270,121 @@ def derive_speaker_count(rel_path: str) -> int:
     return 1
 
 
+def speech_ratio(wav_path: Path) -> Optional[float]:
+    """Fraction of the clip that's voice activity (vs silence/noise).
+
+    Energy-based VAD: 30 ms frames, classify frame as speech if its RMS is
+    >= 2× the 10th-percentile noise floor. Crude but robust on the
+    curated clips. Returns None on read errors so the caller can skip.
+    """
+    import wave
+    import numpy as np
+
+    try:
+        with wave.open(str(wav_path), "rb") as wf:
+            sr = wf.getframerate()
+            sw = wf.getsampwidth()
+            ch = wf.getnchannels()
+            raw = wf.readframes(wf.getnframes())
+    except Exception:
+        return None
+    if sw != 2:
+        return None
+    samples = np.frombuffer(raw, dtype=np.int16)
+    if ch > 1:
+        samples = samples.reshape(-1, ch).mean(axis=1)
+    samples = samples.astype(np.float32) / 32768.0
+
+    frame_len = max(1, int(sr * 0.030))   # 30 ms
+    n_full = (samples.size // frame_len) * frame_len
+    if n_full == 0:
+        return None
+    frames = samples[:n_full].reshape(-1, frame_len)
+    rms = np.sqrt(np.maximum((frames ** 2).mean(axis=1), 1e-12))
+
+    noise_floor = float(np.percentile(rms, 10))
+    threshold = max(noise_floor * 2.0, 1e-4)
+    speech_frames = int((rms > threshold).sum())
+    return float(round(speech_frames / len(rms), 3))
+
+
+def speech_ratio_bucket(ratio: Optional[float]) -> Optional[str]:
+    if ratio is None:
+        return None
+    if ratio >= 0.80:
+        return "mostly-speech"
+    if ratio >= 0.40:
+        return "partial-speech"
+    return "mostly-silence"
+
+
+# Lazy Resemblyzer encoder for sliding-window speaker counting.
+_RES_ENCODER = None
+
+
+def count_speakers_audio(
+    wav_path: Path, *, threshold: float = 0.70
+) -> Optional[int]:
+    """Count distinct speakers via Resemblyzer windowed embeddings + greedy
+    cosine clustering.  Window size = 1.6 s, hop = 0.4 s (Resemblyzer's
+    own embed_utterance partials).
+
+    Returns 1 / 2 / 3+ for clean clips. Returns None on failure
+    (clip too short, encoder not available, etc.) — caller falls back
+    to the filename heuristic.
+    """
+    global _RES_ENCODER
+    try:
+        import numpy as np
+        from resemblyzer import VoiceEncoder, preprocess_wav   # type: ignore[import]
+    except Exception:
+        return None
+    try:
+        if _RES_ENCODER is None:
+            _RES_ENCODER = VoiceEncoder(verbose=False)
+
+        wav = preprocess_wav(str(wav_path))
+        # < ~3 s of speech can't be split into reliable partials
+        if len(wav) < 16000 * 2:
+            return 1
+
+        _, partials, _ = _RES_ENCODER.embed_utterance(
+            wav, return_partials=True, rate=2
+        )
+        if len(partials) < 2:
+            return 1
+
+        # Greedy single-pass clustering: each partial is merged into the
+        # nearest existing centroid if cosine sim >= threshold; else
+        # spawns a new cluster.
+        centroids = [partials[0]]
+        for p in partials[1:]:
+            sims = []
+            for c in centroids:
+                denom = float(np.linalg.norm(p) * np.linalg.norm(c))
+                sims.append(float(np.dot(p, c) / denom) if denom > 0 else 0.0)
+            best = max(sims)
+            if best >= threshold:
+                idx = sims.index(best)
+                # running-average update
+                centroids[idx] = (centroids[idx] + p) / 2.0
+            else:
+                centroids.append(p)
+        return min(len(centroids), 5)   # cap at 5; we don't use higher
+    except Exception:
+        return None
+
+
+def duration_bucket(duration_s: Optional[float]) -> Optional[str]:
+    if duration_s is None:
+        return None
+    if duration_s < 5.0:
+        return "short"
+    if duration_s < 15.0:
+        return "medium"
+    return "long-form"
+
+
 def estimate_snr_db(wav_path: Path) -> float:
     """Energy-based SNR estimate.
 
@@ -367,6 +482,9 @@ async def main() -> int:
     p.add_argument("--no-real-lid", action="store_true",
                    help="skip the WhisperLID pass; use source-dir heuristic only "
                         "(faster but less accurate on unknown clips)")
+    p.add_argument("--no-speaker-count", action="store_true",
+                   help="skip Resemblyzer speaker-count clustering; use filename "
+                        "heuristic (faster; degrades on arbitrary uploads)")
     args = p.parse_args()
 
     if not BENCHMARK_ROOT.is_dir():
@@ -396,13 +514,21 @@ async def main() -> int:
             continue
         try:
             clip = post_clip(args.api, src, src.name)
+            duration_s = clip.get("duration_s")
 
-            # ── Auto-tagger pass ────────────────────────────────────────
-            speaker_count = derive_speaker_count(rel_path)
+            # ── Audio-derived auto-tagger ───────────────────────────────
             try:
                 snr = estimate_snr_db(src)
             except Exception:
                 snr = None
+            sr = speech_ratio(src)
+            sb = speech_ratio_bucket(sr)
+            db = duration_bucket(duration_s)
+
+            # Speaker count: prefer audio-derived (Resemblyzer); fall back
+            # to filename heuristic if the encoder isn't available.
+            spk_audio = count_speakers_audio(src) if not args.no_speaker_count else None
+            speaker_count = spk_audio if spk_audio is not None else derive_speaker_count(rel_path)
 
             # Real LID via WhisperLIDAdapter (~200 ms on CPU per clip)
             if args.no_real_lid:
@@ -410,18 +536,22 @@ async def main() -> int:
                 lid_conf = None
             else:
                 language, lid_conf = await detect_language_real(src, rel_path)
-                # Track fallbacks for the final summary
                 if lid_conf is None or lid_conf < 0.50:
                     n_lid_fallback += 1
 
-            # Add SNR-bucket scenarios automatically
-            if snr is not None and snr == snr:  # not NaN
-                if snr >= 15:
-                    scenarios = list(scenarios) + ["snr-clean"]
-                elif snr >= 5:
-                    scenarios = list(scenarios) + ["snr-mid"]
-                else:
-                    scenarios = list(scenarios) + ["snr-noisy"]
+            # ── Add audio-derived scenarios ──────────────────────────────
+            scenarios = list(scenarios)
+            scenarios.append(f"lang-{language}")
+            if snr is not None and snr == snr:
+                if   snr >= 15: scenarios.append("snr-clean")
+                elif snr >=  5: scenarios.append("snr-mid")
+                else:           scenarios.append("snr-noisy")
+            if sb: scenarios.append(sb)
+            if db: scenarios.append(db)
+            if speaker_count and speaker_count >= 2:
+                scenarios.append("multi-speaker")
+            elif speaker_count == 1:
+                scenarios.append("single-speaker")
 
             patch_tags(
                 args.api, clip["id"], scenarios, user_tags,
@@ -430,9 +560,11 @@ async def main() -> int:
             cat = scenarios[0]
             by_category.setdefault(cat, []).append((clip["id"], src.name, note))
             conf_str = f" ({lid_conf:.2f})" if lid_conf is not None else ""
-            print(f"  ✓ [{cat}] {src.name}  →  {clip['id'][:8]}…  "
-                  f"lang={language}{conf_str}  "
-                  f"snr={snr if snr else '—'}dB  spk={speaker_count}")
+            spk_label = f"{speaker_count}{'(audio)' if spk_audio is not None else '(name)'}"
+            print(f"  ✓ [{cat}] {src.name:<35}  →  {clip['id'][:8]}…  "
+                  f"lang={language}{conf_str}  snr={snr if snr else '—':>5}dB  "
+                  f"spk={spk_label}  speech={sr if sr is not None else '—':<5}  "
+                  f"dur={db}")
         except Exception as e:
             print(f"  ✗ FAILED: {rel_path}: {e}", file=sys.stderr)
             failed += 1
