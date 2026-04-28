@@ -33,11 +33,14 @@ export interface Adapter {
 export interface Clip {
   id: string
   source: 'record' | 'upload'
-  modality: 'audio'
+  modality: 'audio' | 'video'
+  filename: string
+  format: string
+  original_filename: string
+  original_format: string
   duration_s: number
   sample_rate: number
   channels: number
-  format: string
   language_detected: string | null
   snr_db: number | null
   speaker_count_estimate: number | null
@@ -122,6 +125,34 @@ export async function listAdapters(category?: ModelCategory): Promise<Adapter[]>
 // ---------------------------------------------------------------------------
 // Clips
 // ---------------------------------------------------------------------------
+
+/** Audio URL for a stored clip — the canonical extracted audio. */
+export function clipAudioUrl(clipId: string): string {
+  return `${BASE}/api/clips/${clipId}/audio`
+}
+
+/** GET /api/clips — full clip library, freshest first server-side. */
+export async function listClips(): Promise<Clip[]> {
+  const res = await apiFetch<{ clips: Clip[] }>('/api/clips')
+  return res.clips
+}
+
+/** PATCH /api/clips/{id} — update user_tags or scenarios. */
+export async function updateClipTags(
+  clipId: string,
+  patch: { user_tags?: string[]; scenarios?: string[] },
+): Promise<Clip> {
+  return apiFetch<Clip>(`/api/clips/${clipId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  })
+}
+
+/** DELETE /api/clips/{id} — purge clip + manifest from disk. */
+export async function deleteClip(clipId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/clips/${clipId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Delete ${res.status}`)
+}
 
 /** Upload a raw audio Blob. Returns the created Clip. */
 export async function uploadClip(blob: Blob, mime: string): Promise<Clip> {

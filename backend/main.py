@@ -215,6 +215,41 @@ async def get_clips():
     return {"clips": [c.to_dict() for c in clips]}
 
 
+class ClipPatch(BaseModel):
+    user_tags: Optional[list] = None
+    scenarios: Optional[list] = None
+
+
+@app.patch("/api/clips/{clip_id}", response_model=ClipOut)
+async def update_clip(clip_id: str, patch: ClipPatch):
+    """Mutate a clip's user_tags / scenarios — used by the Corpus page chip
+    tagger.  Other fields are immutable post-ingest by design."""
+    import json as _json
+    from storage.clips import _clip_dir   # type: ignore
+    clip = get_clip(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    if patch.user_tags is not None:
+        clip.user_tags = list(dict.fromkeys(patch.user_tags))   # dedupe
+    if patch.scenarios is not None:
+        clip.scenarios = list(dict.fromkeys(patch.scenarios))
+    (_clip_dir(clip_id) / "manifest.json").write_text(
+        _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+    )
+    return ClipOut(**clip.to_dict())
+
+
+@app.delete("/api/clips/{clip_id}", status_code=204)
+async def delete_clip(clip_id: str):
+    from storage.clips import _clip_dir   # type: ignore
+    import shutil
+    clip = get_clip(clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    shutil.rmtree(_clip_dir(clip_id), ignore_errors=True)
+    return None
+
+
 @app.get("/api/clips/{clip_id}/audio")
 async def stream_clip_audio(clip_id: str):
     clip = get_clip(clip_id)
