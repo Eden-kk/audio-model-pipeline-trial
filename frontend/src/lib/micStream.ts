@@ -12,13 +12,23 @@ const TARGET_SR = 16000   // matches what /ws/mic expects
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
 export interface MicStreamEvent {
-  event: 'StageStarted' | 'StageProgress' | 'StageCompleted' | 'StageFailed'
+  event:
+    | 'StageStarted'
+    | 'StageProgress'
+    | 'StageCompleted'
+    | 'StageFailed'
+    /** Plan D A6 — emitted right after StageCompleted when the client
+     *  opted in via {save: true}; carries the new corpus clip_id so the
+     *  UI can deep-link to the saved row. */
+    | 'ClipSaved'
   partial_text?: string
   partial_index?: number
   result?: { text?: string; words?: unknown[]; language?: string; wall_time_s?: number }
   latency_ms?: number
   error?: string
   adapter?: string
+  /** Set on `ClipSaved` events. */
+  clip_id?: string
 }
 
 export interface MicStreamHandle {
@@ -33,12 +43,17 @@ interface StartOptions {
   adapter: string
   onEvent: (ev: MicStreamEvent) => void
   onError?: (err: Error) => void
+  /** Plan D A6 — when true, the backend persists the captured PCM
+   *  + streaming transcript as a corpus clip on stop. Default false
+   *  preserves the legacy ephemeral live-stream UX. */
+  save?: boolean
 }
 
 export async function startMicStream({
   adapter,
   onEvent,
   onError,
+  save = false,
 }: StartOptions): Promise<MicStreamHandle> {
   // 1) Get the mic
   let stream: MediaStream
@@ -74,7 +89,7 @@ export async function startMicStream({
 
   // 3) Open the WS to backend, wait for it to open
   const wsBase = BASE.replace(/^http/, 'ws')
-  const wsUrl = `${wsBase}/ws/mic?adapter=${encodeURIComponent(adapter)}&sample_rate=${audioCtx.sampleRate}`
+  const wsUrl = `${wsBase}/ws/mic?adapter=${encodeURIComponent(adapter)}&sample_rate=${audioCtx.sampleRate}${save ? '&save=1' : ''}`
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 

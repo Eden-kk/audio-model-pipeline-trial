@@ -10,22 +10,36 @@ interface Props {
 
 /** Live-mic streaming button. Records via AudioWorklet and streams 16 kHz
  *  PCM through /ws/mic to the chosen vendor's streaming WS. Tokens come
- *  back as StageProgress events. Click again to stop. */
+ *  back as StageProgress events. Click again to stop.
+ *
+ *  Plan D A6 — adds a "Save to corpus" checkbox. When ticked, the backend
+ *  persists the captured audio + streaming transcript as a live-mic corpus
+ *  clip with the ar-glass-capture / live-mic / vendor-X scenarios stamped
+ *  in (so the user can build the AR-glass benchmark by speaking into the
+ *  mic). The clip_id arrives in a `ClipSaved` event and gets surfaced
+ *  inline so the user can jump to the new corpus row. */
 export default function MicStream({ adapter, onEvent, disabled = false }: Props) {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [seconds, setSeconds] = useState(0)
+  const [saveToCorpus, setSaveToCorpus] = useState(false)
+  const [savedClipId, setSavedClipId] = useState<string | null>(null)
   const handleRef = useRef<MicStreamHandle | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function start() {
     setError(null)
     setSeconds(0)
+    setSavedClipId(null)
     try {
       const handle = await startMicStream({
         adapter,
+        save: saveToCorpus,
         onEvent: (ev) => {
           onEvent(ev)
+          if (ev.event === 'ClipSaved' && ev.clip_id) {
+            setSavedClipId(ev.clip_id)
+          }
           if (ev.event === 'StageCompleted' || ev.event === 'StageFailed') {
             setStreaming(false)
             if (timerRef.current) clearInterval(timerRef.current)
@@ -81,9 +95,35 @@ export default function MicStream({ adapter, onEvent, disabled = false }: Props)
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-white animate-pulse ml-2" />
         )}
       </button>
+
+      <label className="flex items-center gap-1.5 text-xs text-gray-700 select-none">
+        <input
+          type="checkbox"
+          className="h-3.5 w-3.5 rounded border-gray-300"
+          checked={saveToCorpus}
+          disabled={streaming}
+          onChange={(e) => setSaveToCorpus(e.target.checked)}
+        />
+        Save to corpus
+        <span className="text-gray-400">
+          (tags: <code className="text-[10px]">ar-glass-capture</code>)
+        </span>
+      </label>
+
       <p className="text-xs text-gray-600">
         Live-streams 16 kHz PCM directly to the model. Transcript appears as you speak.
       </p>
+      {savedClipId && !streaming && (
+        <p className="text-xs text-green-700">
+          Saved to corpus —{' '}
+          <a
+            href={`/corpus?focus=${savedClipId}`}
+            className="underline hover:text-green-900"
+          >
+            view clip {savedClipId.slice(0, 8)}…
+          </a>
+        </p>
+      )}
       {error && <p className="text-red-600 text-xs">{error}</p>}
     </div>
   )
