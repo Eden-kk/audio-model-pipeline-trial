@@ -1,22 +1,26 @@
 """Shared HTTP client for self-hosted NeMo ASR models.
 
 The audio-trial backend talks to a separate `model-server` that hosts
-Parakeet + Canary models behind a unified HTTP API. Two deploy targets
+Parakeet + Canary models behind a unified HTTP API. Three deploy targets
 ship today:
 
   - Modal       (CUDA L4, default — `modal deploy model-server/modal_app.py`)
   - AMD-ROCm    (`docker compose -f model-server/docker-compose.yml up -d`)
+  - Local CUDA  (native venv on a NVIDIA box — see model-server/run-cuda.sh,
+                  or docker via `model-server/docker-compose.cuda.yml`)
 
-Both speak the same wire shape; only the URL changes. Adapters pick
+All three speak the same wire shape; only the URL changes. Adapters pick
 which target to hit via env (resolved by ``model_server_url()`` below):
 
-  MODEL_SERVER_BACKEND=modal|amd   declares which target to use.
-                                   Defaults to "modal".
-  MODEL_SERVER_MODAL_URL=https://… public Modal URL printed by deploy.
-  MODEL_SERVER_AMD_URL=http://…    AMD docker-compose host:port (default
-                                   http://localhost:9100).
-  MODEL_SERVER_URL=…               legacy single-knob; if set, beats both
-                                   of the above (handy in CI / one-offs).
+  MODEL_SERVER_BACKEND=modal|amd|local  declares which target to use.
+                                        Defaults to "modal".
+  MODEL_SERVER_MODAL_URL=https://…      public Modal URL printed by deploy.
+  MODEL_SERVER_AMD_URL=http://…         AMD host:port (default
+                                        http://localhost:9100).
+  MODEL_SERVER_LOCAL_URL=http://…       local CUDA host:port (default
+                                        http://localhost:9100).
+  MODEL_SERVER_URL=…                    legacy single-knob; if set, beats
+                                        all of the above (handy in CI).
 
 Wire contract (model-server/server.py for AMD, modal_app.py for Modal):
   POST {url}/v1/transcribe?model=<id>
@@ -41,6 +45,9 @@ def model_server_url() -> str:
     if backend == "amd":
         return os.environ.get("MODEL_SERVER_AMD_URL",
                               "http://localhost:9100").rstrip("/")
+    if backend == "local":
+        return os.environ.get("MODEL_SERVER_LOCAL_URL",
+                              "http://localhost:9100").rstrip("/")
     if backend == "modal":
         # Modal default of localhost:9100 is intentional — you HAVE to set
         # MODEL_SERVER_MODAL_URL after `modal deploy` prints the public URL.
@@ -49,7 +56,7 @@ def model_server_url() -> str:
                               "http://localhost:9100").rstrip("/")
     raise RuntimeError(
         f"MODEL_SERVER_BACKEND={backend!r} not understood. "
-        f"Set to 'modal' or 'amd', or set MODEL_SERVER_URL directly."
+        f"Set to 'modal', 'amd', or 'local', or set MODEL_SERVER_URL directly."
     )
 
 
@@ -82,7 +89,9 @@ async def transcribe_via_model_server(
             f"  • Modal:  `modal deploy model-server/modal_app.py` and set "
             f"MODEL_SERVER_MODAL_URL to the printed URL\n"
             f"  • AMD:    `docker compose -f model-server/docker-compose.yml "
-            f"up -d` (then MODEL_SERVER_AMD_URL=http://localhost:9100)"
+            f"up -d` (then MODEL_SERVER_AMD_URL=http://localhost:9100)\n"
+            f"  • Local:  `bash model-server/run-cuda.sh` on a CUDA box "
+            f"(then MODEL_SERVER_LOCAL_URL=http://localhost:9100)"
         ) from e
     if resp.status_code == 503:
         raise RuntimeError(
