@@ -1011,6 +1011,14 @@ async def _save_streamed_clip(
 
     clip_id = new_clip_id()
     now = datetime.datetime.utcnow().isoformat() + "Z"
+    # Plan D Stage A5 — every live-mic-captured clip gets stamped with two
+    # scenario tags up-front:
+    #   - "live-mic"          provenance: came from /ws/mic, not upload/record
+    #   - "ar-glass-capture"  intent: user is building the AR-glass benchmark
+    # The Corpus page can filter on either to find the captures. Auto-tagger
+    # tags (snr-*, lang-*, etc.) get unioned in below — these two go in first
+    # so they're always present even if the auto-tagger fails.
+    seed_scenarios = ["ar-glass-capture", "live-mic", f"vendor-{vendor}"]
     clip = Clip(
         id=clip_id,
         source="live-mic",
@@ -1021,6 +1029,7 @@ async def _save_streamed_clip(
         created_at=now,
         captured_transcript=transcript,
         captured_transcript_segments=list(transcript_segments or []),
+        scenarios=list(seed_scenarios),
     )
     clip = save_clip(clip, wav_bytes, "wav")
 
