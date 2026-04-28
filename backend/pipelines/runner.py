@@ -19,10 +19,13 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json as _json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+log = logging.getLogger("trial-app.runner")
 
 
 def _load_enrolled_embedding(profile_id: str = "wearer") -> Optional[str]:
@@ -142,6 +145,7 @@ async def run_pipeline(
 
         # ── Run the stage ──────────────────────────────────────────────────
         started_at = datetime.datetime.utcnow().isoformat() + "Z"
+        log.info(f"stage start  | id={stage_id} category={category} adapter={adapter_id}")
         await _emit({
             "event": "StageStarted",
             "stage_id": stage_id,
@@ -285,6 +289,7 @@ async def run_pipeline(
         stage_outputs[stage_id] = result   # for downstream dispatch lookup
 
         if stage_err:
+            log.warning(f"stage FAIL   | id={stage_id} latency={latency_ms:.0f}ms err={stage_err}")
             await _emit({
                 "event": "StageFailed",
                 "stage_id": stage_id,
@@ -294,6 +299,7 @@ async def run_pipeline(
             })
             return _final(out_stages, total_cost, pipeline_t0, error=stage_err)
 
+        log.info(f"stage done   | id={stage_id} latency={latency_ms:.0f}ms cost=${cost:.5f} preview={stage_record['output_preview'][:80]!r}")
         await _emit({
             "event": "StageCompleted",
             "stage_id": stage_id,
