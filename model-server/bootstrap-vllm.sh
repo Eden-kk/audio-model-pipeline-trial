@@ -34,10 +34,17 @@ export UV_LINK_MODE=copy
 # vLLM ships its own torch pin via the install spec; we add the cu128 channel
 # so the resolver can reach Blackwell-capable wheels. vLLM's setup.py picks
 # the right CUDA flavor based on what torch is already installed.
+#
+# Pinning notes:
+#   - vllm 0.11.0 is the latest version still built against the cu128 (CUDA
+#     12.8) runtime. vllm 0.12+ requires libcudart.so.13 (CUDA 13), which
+#     isn't packaged on PyPI for Blackwell yet.
+#   - transformers<5 because vllm 0.11 reads tokenizer.all_special_tokens_extended,
+#     which was removed in transformers 5.x. The 4.x line still has it.
 uv pip install --python "$VENV_DIR/bin/python" \
   --index-strategy unsafe-best-match \
   --extra-index-url "$TORCH_INDEX" \
-  vllm
+  "vllm==0.11.0" "transformers<5,>=4.49"
 
 echo
 echo "vllm venv ready at $VENV_DIR"

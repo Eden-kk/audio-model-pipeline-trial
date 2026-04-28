@@ -47,7 +47,22 @@ export CUDA_VISIBLE_DEVICES="$VLLM_GPU"
 
 echo "vllm: model=$VLLM_MODEL  gpu=$VLLM_GPU  port=$VLLM_PORT  cache=$MODEL_CACHE_DIR/vllm"
 
+# flashinfer JIT-compiles attention/sampling kernels at first run via ninja.
+# vllm spawns engine subprocesses that inherit PATH from this shell; ninja
+# lives in the venv's bin/ which isn't on the inherited PATH unless we
+# prepend it explicitly. Without this, B200 startup dies with
+# `FileNotFoundError: ... 'ninja'`.
+export PATH="$VENV_DIR/bin:$PATH"
+
+# B200 + vllm 0.11 + FlashInfer's decode wrapper hits an `_sm_scale`
+# AssertionError during the first forward pass with the default Blackwell
+# kernel selection. Workaround: force --enforce-eager so vllm doesn't
+# install the FlashInfer-compiled attention path. Slight perf hit; correct
+# semantics. Override via VLLM_EXTRA_ARGS if you have a working FA build.
+VLLM_EXTRA_ARGS="${VLLM_EXTRA_ARGS:---enforce-eager}"
+
 exec "$VENV_DIR/bin/vllm" serve "$VLLM_MODEL" \
   --host 0.0.0.0 --port "$VLLM_PORT" \
   --max-model-len "$VLLM_MAX_MODEL_LEN" \
-  --served-model-name "$VLLM_MODEL"
+  --served-model-name "$VLLM_MODEL" \
+  $VLLM_EXTRA_ARGS
