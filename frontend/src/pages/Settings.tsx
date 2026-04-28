@@ -260,13 +260,15 @@ export default function Settings() {
 
             <details open>
               <summary className="text-sm font-medium text-gray-900 cursor-pointer hover:text-gray-700">
-                Option A — Groq (fastest, free tier)
+                Option A — Qwen-2.5-7B on Modal (recommended, zero per-call cost)
               </summary>
               <pre className="mt-2 text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded p-3 overflow-auto">
-{`# Add to backend/.env (uses your existing GROQ_API_KEY)
-INTENT_LLM_URL=https://api.groq.com/openai/v1
-INTENT_LLM_KEY=$GROQ_API_KEY
-INTENT_LLM_MODEL=llama-3.3-70b-versatile
+{`# ambient-deploy's exp06-qwen25-openai-server (vLLM Qwen-2.5-7B on A100).
+# Validated end-to-end: 376 in / 219 out tokens on a 6-segment slow-loop
+# call; cold-start ~45s, warm calls 1-3s.
+INTENT_LLM_URL=https://hao-ai-lab--exp06-qwen25-openai-server-server-fastapi-app.modal.run/v1
+INTENT_LLM_KEY=sk-dummy-ambient-deploy
+INTENT_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
 
 # then restart uvicorn`}
               </pre>
@@ -274,24 +276,25 @@ INTENT_LLM_MODEL=llama-3.3-70b-versatile
 
             <details className="mt-2">
               <summary className="text-sm font-medium text-gray-900 cursor-pointer hover:text-gray-700">
-                Option B — OpenAI directly
+                Option B — Groq (fast, free tier — Llama-3.3, NOT Qwen)
               </summary>
               <pre className="mt-2 text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded p-3 overflow-auto">
-{`INTENT_LLM_URL=https://api.openai.com/v1
-INTENT_LLM_KEY=sk-...
-INTENT_LLM_MODEL=gpt-4o-mini`}
+{`# Uses your existing GROQ_API_KEY. Groq doesn't host Qwen models, so
+# this is the fastest non-Qwen alternative.
+INTENT_LLM_URL=https://api.groq.com/openai/v1
+INTENT_LLM_KEY=$GROQ_API_KEY
+INTENT_LLM_MODEL=llama-3.3-70b-versatile`}
               </pre>
             </details>
 
             <details className="mt-2">
               <summary className="text-sm font-medium text-gray-900 cursor-pointer hover:text-gray-700">
-                Option C — Self-host Qwen on Modal (zero per-call cost)
+                Option C — OpenAI directly
               </summary>
               <pre className="mt-2 text-[11px] text-gray-700 bg-gray-50 border border-gray-200 rounded p-3 overflow-auto">
-{`# If ambient-deploy's exp06-qwen25-openai-server is live:
-INTENT_LLM_URL=https://hao-ai-lab--exp06-qwen25-openai-server-app.modal.run/v1
-INTENT_LLM_KEY=
-INTENT_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct`}
+{`INTENT_LLM_URL=https://api.openai.com/v1
+INTENT_LLM_KEY=sk-...
+INTENT_LLM_MODEL=gpt-4o-mini`}
               </pre>
             </details>
 
