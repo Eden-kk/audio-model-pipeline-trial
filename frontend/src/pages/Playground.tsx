@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import MicRecorder from '../components/MicRecorder'
+import MicStream from '../components/MicStream'
 import AudioFileDrop from '../components/AudioFileDrop'
 import {
   listAdapters,
@@ -59,7 +60,7 @@ export default function Playground() {
   const [events, setEvents] = useState<RunEvent[]>([])
   const [results, setResults] = useState<StageResult[]>([])
   const [runError, setRunError] = useState<string | null>(null)
-  const [inputMode, setInputMode] = useState<'record' | 'upload'>('upload')
+  const [inputMode, setInputMode] = useState<'record' | 'upload' | 'mic-stream'>('upload')
 
   // Load adapters on mount
   useEffect(() => {
@@ -293,31 +294,93 @@ export default function Playground() {
           <div className="card flex flex-col gap-4">
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Audio Input</h2>
 
-            <div className="flex gap-2">
-              {(['upload', 'record'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setInputMode(mode)}
-                  className={cx(
-                    inputMode === mode ? 'btn-pill-dark' : 'btn-pill-outline',
-                    'text-xs',
-                    busy && 'opacity-50 cursor-not-allowed',
-                  )}
-                >
-                  {mode === 'upload' ? 'File upload' : 'Mic record'}
-                </button>
-              ))}
+            <div className="flex gap-2 flex-wrap">
+              {([
+                { id: 'upload', label: 'File upload', requiresStreaming: false },
+                { id: 'record', label: 'Mic record', requiresStreaming: false },
+                { id: 'mic-stream', label: 'Mic stream (live)', requiresStreaming: true },
+              ] as const).map(({ id, label, requiresStreaming }) => {
+                const blocked = requiresStreaming && !selectedMeta?.is_streaming
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    disabled={busy || blocked}
+                    onClick={() => setInputMode(id)}
+                    title={blocked ? 'Pick a streaming-capable adapter (●) first' : undefined}
+                    className={cx(
+                      inputMode === id ? 'btn-pill-dark' : 'btn-pill-outline',
+                      'text-xs',
+                      (busy || blocked) && 'opacity-50 cursor-not-allowed',
+                    )}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
             </div>
 
-            {inputMode === 'upload' ? (
+            {inputMode === 'upload' && (
               <AudioFileDrop onBlob={handleBlob} disabled={busy} />
-            ) : (
+            )}
+            {inputMode === 'record' && (
               <MicRecorder onBlob={handleBlob} disabled={busy} />
             )}
+            {inputMode === 'mic-stream' && selectedMeta?.is_streaming && (
+              <MicStream
+                adapter={selectedAdapter}
+                disabled={busy}
+                onEvent={(ev) => {
+                  setEvents((prev) => [...prev, ev])
+                  if (ev.event === 'StageStarted') {
+                    setRunState('running')
+                    setStatusMsg('Streaming…')
+                    setRunError(null)
+                    setResults([{
+                      stage_id: selectedAdapter,
+                      transcript: '',
+                      is_streaming: true,
+                      partial_count: 0,
+                      is_final: false,
+                    }])
+                  }
+                  if (ev.event === 'StageProgress') {
+                    setResults((prev) => {
+                      const r = prev[0] ?? {
+                        stage_id: selectedAdapter,
+                        is_streaming: true,
+                      }
+                      return [{
+                        ...r,
+                        transcript: ev.partial_text ?? '',
+                        partial_count: (r.partial_count ?? 0) + 1,
+                        is_final: false,
+                      }]
+                    })
+                  }
+                  if (ev.event === 'StageCompleted') {
+                    setResults((prev) => {
+                      const r = prev[0] ?? { stage_id: selectedAdapter, is_streaming: true }
+                      return [{
+                        ...r,
+                        transcript: ev.result?.text ?? r.transcript ?? '',
+                        latency_ms: ev.latency_ms,
+                        raw_response: ev.result,
+                        is_final: true,
+                      }]
+                    })
+                    setRunState('done')
+                    setStatusMsg('Done')
+                  }
+                  if (ev.event === 'StageFailed') {
+                    setRunError(ev.error ?? 'Streaming failed')
+                    setRunState('error')
+                  }
+                }}
+              />
+            )}
 
-            {hasAudio && (
+            {hasAudio && inputMode !== 'mic-stream' && (
               <p className="text-xs text-green-700">
                 Audio ready — {(pendingBlob!.blob.size / 1024).toFixed(1)} KB ({pendingBlob!.mime})
               </p>
@@ -325,7 +388,8 @@ export default function Playground() {
           </div>
         </div>
 
-        {/* Run button */}
+        {/* Run button — hidden in mic-stream mode (the stream button itself starts the run) */}
+        {inputMode !== 'mic-stream' && (
         <div className="flex items-center gap-4">
           <button
             type="button"
@@ -344,6 +408,7 @@ export default function Playground() {
             </div>
           )}
         </div>
+        )}
 
         {/* ── Results section ── */}
         {runError && (

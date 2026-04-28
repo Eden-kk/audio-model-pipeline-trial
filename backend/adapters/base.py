@@ -16,9 +16,18 @@ PORT_TYPES = {
     "audio_file", "audio_stream", "audio_pcm", "text",
     "word_timing", "speech_segments", "speaker_segments",
     "embedding", "score", "tool_calls",
+    # Slow-loop additions (Slice 9.1)
+    "language",         # output of LID adapters: {language, confidence}
+    "memory_doc",       # intent_llm output envelope
+    "dispatch_status",  # dispatch sink output (ack)
 }
 
-ModelCategory = str  # "vad" | "asr" | "speaker_verify" | "diarization" | "tts" | ...
+ModelCategory = str
+# Known categories:
+#   "vad" | "asr" | "speaker_verify" | "diarization" | "tts" |
+#   "intent_llm" | "realtime_omni" |
+#   "lid"        — language identification (Slice 9.1)
+#   "dispatch"   — terminal sink (HaoClaw outbox / chat.send)
 
 
 # ─── Protocol ─────────────────────────────────────────────────────────────────
@@ -87,6 +96,79 @@ class Adapter(Protocol):
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not implement verify(); "
+            f"check adapter.category before dispatch."
+        )
+
+    # ── Slow-loop additions (Slice 9.1) ─────────────────────────────────
+
+    async def lid(self, audio_path: str, config: dict) -> dict:
+        """LID adapters: detect spoken language in a clip prefix.
+        Returns: {language: 'en'|'zh'|..., confidence: 0..1, candidates?: [...]}
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement lid(); "
+            f"check adapter.category before dispatch."
+        )
+
+    async def verify_segments(
+        self,
+        audio_path: str,
+        *,
+        enrolled_embedding_b64: str,
+        config: dict,
+    ) -> dict:
+        """Speaker-verify adapters: per-segment user/non-user labels via
+        sliding window. ALWAYS returns the per-segment embedding so a
+        future v2 (multi-profile) and v3 (cluster-based auto-enroll) can
+        consume it without schema changes.
+
+        Config knobs:
+          window_s   default 1.0  — segment width in seconds
+          hop_s      default 0.5  — stride between segments
+          threshold  default 0.5  — match threshold for is_user
+
+        Returns:
+          {
+            "segments": [
+              {"start": float, "end": float, "embedding_b64": str,
+               "score": float, "is_user": bool}
+            ],
+            "window_s": float, "hop_s": float, "threshold": float,
+            "n_segments": int, "duration_s": float
+          }
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement verify_segments(); "
+            f"check adapter.category before dispatch."
+        )
+
+    async def infer(self, payload: dict, config: dict) -> dict:
+        """intent_llm adapters: text + speaker_segments → structured envelope.
+
+        Input payload shape:
+          {"text": str,
+           "words": [{"word", "start", "end", "speaker"?}],
+           "speaker_segments": [{"start", "end", "is_user", "score"}],
+           "language": str}
+
+        Returns the slow-loop envelope:
+          {"memory_doc": str,
+           "tool_calls": [{"name", "args"}, ...],
+           "salient_facts": [str, ...],
+           "input_tokens": int, "output_tokens": int, "cost_usd": float}
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement infer(); "
+            f"check adapter.category before dispatch."
+        )
+
+    async def dispatch(self, envelope: dict, config: dict) -> dict:
+        """dispatch adapters: send the slow-loop envelope to a sink.
+
+        Returns: {"sink": str, "ack": str, "bytes_written"?: int}
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement dispatch(); "
             f"check adapter.category before dispatch."
         )
 
