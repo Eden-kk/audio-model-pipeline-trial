@@ -564,7 +564,7 @@ export default function Playground() {
 
             <div className="px-5 py-4">
               {primaryResult?.transcript ? (
-                <p className="text-gray-900 leading-relaxed whitespace-pre-wrap">
+                <p className="text-gray-900 leading-relaxed whitespace-pre-wrap break-words">
                   {primaryResult.transcript}
                   {primaryResult.is_streaming && !primaryResult.is_final && (
                     <span

@@ -11,7 +11,11 @@ export default function App() {
     <BrowserRouter>
       <div className="flex h-screen bg-gray-50 text-gray-900">
         <Sidebar />
-        <main className="flex-1 overflow-auto">
+        {/* min-w-0 lets <main> shrink below the intrinsic width of its
+            content (default min-width: auto in a row-flex parent would
+            otherwise force long unbroken transcripts to push the column
+            past the viewport instead of wrapping). */}
+        <main className="flex-1 min-w-0 overflow-auto">
           <Routes>
             <Route path="/" element={<Navigate to="/playground" replace />} />
             <Route path="/playground" element={<Playground />} />
