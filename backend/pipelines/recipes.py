@@ -84,6 +84,55 @@ def list_recipes() -> List[Dict[str, Any]]:
             "edges": [],
         },
         {
+            "id": "slow-loop",
+            "name": "Slow-loop (ASR → speaker-tag → intent → HaoClaw)",
+            "description": (
+                "VisionClaw's slow-loop pipeline. A 30-second ambient clip "
+                "is transcribed by a native multilingual ASR, per-segment "
+                "wearer-tagged via sliding-window speaker-verify, distilled "
+                "by an intent LLM into {memory_doc, tool_calls, salient_facts}, "
+                "and appended to data/haoclaw_outbox.jsonl."
+            ),
+            "is_recipe": True,
+            "stages": [
+                {
+                    "id": "asr",
+                    "category": "asr",
+                    "adapter": None,
+                    "config": {},
+                },
+                {
+                    "id": "speaker_tag",
+                    "category": "speaker_verify",
+                    "adapter": None,
+                    # mode='segments' → adapter.verify_segments() instead of .verify()
+                    # window_s/hop_s/threshold are stage-level knobs the user can tune
+                    "config": {
+                        "mode": "segments",
+                        "window_s": 1.0,
+                        "hop_s": 0.5,
+                    },
+                },
+                {
+                    "id": "intent",
+                    "category": "intent_llm",
+                    "adapter": None,
+                    "config": {},
+                },
+                {
+                    "id": "dispatch",
+                    "category": "dispatch",
+                    "adapter": None,
+                    "config": {},
+                },
+            ],
+            "edges": [
+                {"from": "asr", "to": "intent", "port": "text"},
+                {"from": "speaker_tag", "to": "intent", "port": "speaker_segments"},
+                {"from": "intent", "to": "dispatch", "port": "memory_doc"},
+            ],
+        },
+        {
             "id": "asr-then-tts",
             "name": "ASR → TTS round-trip",
             "description": (

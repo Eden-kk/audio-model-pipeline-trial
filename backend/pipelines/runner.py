@@ -72,6 +72,12 @@ async def run_pipeline(
     # Stage outputs for chaining: stage_id → {text?, audio_path?, ...}
     upstream_text: Optional[str] = None
     upstream_audio_path: Optional[str] = clip_audio_path  # initial input
+    upstream_words: List[Dict[str, Any]] = []
+    upstream_language: Optional[str] = None
+    upstream_speaker_segments: List[Dict[str, Any]] = []
+    # All stage results keyed by stage_id so terminal stages (dispatch) can
+    # reach back to whatever upstream stage produced the envelope.
+    stage_outputs: Dict[str, Dict[str, Any]] = {}
 
     async def _emit(payload: Dict[str, Any]) -> None:
         if on_event is not None:
@@ -128,12 +134,16 @@ async def run_pipeline(
         stage_err: Optional[str] = None
         try:
             if category == "asr":
-                # Take audio from upstream (initial clip or last stage's audio output)
                 if upstream_audio_path is None:
                     raise StageError("asr stage requires upstream audio")
-                result = await adapter.transcribe(upstream_audio_path, config)
+                # If an upstream LID stage detected the language, thread it in.
+                merged_config = {**config}
+                if upstream_language and "language" not in config:
+                    merged_config["language"] = upstream_language
+                result = await adapter.transcribe(upstream_audio_path, merged_config)
                 upstream_text = (result.get("text") or "")
-                # Don't update upstream_audio_path; ASR doesn't produce audio.
+                upstream_words = result.get("words") or []
+                upstream_language = result.get("language", upstream_language)
 
             elif category == "tts":
                 if upstream_text is None:
@@ -142,14 +152,18 @@ async def run_pipeline(
                         "supply config.text in stage_configs)"
                     )
                 result = await adapter.synthesize(upstream_text, config)
-                # TTS produces audio_b64; persist to a tmpfile for chaining.
                 upstream_audio_path = _persist_audio_b64(
                     result.get("audio_b64"),
                     sample_rate=int(result.get("sample_rate", 16000)),
                 )
 
+            elif category == "lid":
+                if upstream_audio_path is None:
+                    raise StageError("lid stage requires audio")
+                result = await adapter.lid(upstream_audio_path, config)
+                upstream_language = result.get("language")
+
             elif category == "speaker_verify":
-                # Speaker verify expects an enrolled embedding in config.
                 emb = config.get("enrolled_embedding_b64")
                 if not emb:
                     raise StageError(
@@ -158,11 +172,59 @@ async def run_pipeline(
                     )
                 if upstream_audio_path is None:
                     raise StageError("speaker_verify stage requires audio")
-                result = await adapter.verify(
-                    upstream_audio_path,
-                    enrolled_embedding_b64=emb,
-                    config=config,
-                )
+                # `mode: 'segments'` (slow-loop) → per-segment user-tag;
+                # default 'overall' → single score-vs-wearer for the whole clip.
+                mode = config.get("mode", "overall")
+                if mode == "segments":
+                    result = await adapter.verify_segments(
+                        upstream_audio_path,
+                        enrolled_embedding_b64=emb,
+                        config=config,
+                    )
+                    upstream_speaker_segments = result.get("segments") or []
+                else:
+                    result = await adapter.verify(
+                        upstream_audio_path,
+                        enrolled_embedding_b64=emb,
+                        config=config,
+                    )
+
+            elif category == "intent_llm":
+                if upstream_text is None:
+                    raise StageError(
+                        "intent_llm stage requires an upstream ASR transcript"
+                    )
+                payload = {
+                    "text": upstream_text,
+                    "words": upstream_words,
+                    "speaker_segments": upstream_speaker_segments,
+                    "language": upstream_language or "en",
+                }
+                result = await adapter.infer(payload, config)
+
+            elif category == "dispatch":
+                # Pick up the previous stage's envelope (typically an
+                # intent_llm result). Fall back to the most recent stage_output.
+                envelope: Dict[str, Any]
+                if "envelope" in config:
+                    envelope = config["envelope"]   # explicit override
+                else:
+                    # Walk backwards through stage_outputs for an envelope-shaped one
+                    envelope = {}
+                    for s_id in reversed(list(stage_outputs.keys())):
+                        prev = stage_outputs[s_id]
+                        if any(k in prev for k in ("memory_doc", "tool_calls", "salient_facts")):
+                            envelope = {k: prev.get(k)
+                                        for k in ("memory_doc", "tool_calls", "salient_facts")
+                                        if k in prev}
+                            break
+                if not envelope:
+                    raise StageError(
+                        "dispatch stage requires upstream envelope "
+                        "(intent_llm stage with memory_doc/tool_calls/salient_facts)"
+                    )
+                result = await adapter.dispatch(envelope, config)
+
             else:
                 raise StageError(f"unsupported stage category {category!r}")
         except Exception as e:
@@ -189,6 +251,7 @@ async def run_pipeline(
             "error": stage_err,
         }
         out_stages.append(stage_record)
+        stage_outputs[stage_id] = result   # for downstream dispatch lookup
 
         if stage_err:
             await _emit({
@@ -261,10 +324,28 @@ def _pick_output_preview(category: str, result: Dict[str, Any]) -> str:
             if dur and sr and ttfa else "audio"
         )
     if category == "speaker_verify":
+        # verify_segments() returns {segments: [...], n_segments, ...}
+        if "n_segments" in result:
+            user_n = sum(1 for s in result.get("segments") or [] if s.get("is_user"))
+            n = result["n_segments"]
+            return f"{n} segments · {user_n} user · {n - user_n} other"
         score = result.get("score")
         match = result.get("match")
         thr = result.get("threshold")
         return f"score={score:.3f} match={match} (thr={thr})" if score is not None else ""
+    if category == "lid":
+        lang = result.get("language")
+        conf = result.get("confidence")
+        return f"lang={lang} ({conf:.2f})" if lang and conf is not None else f"lang={lang}"
+    if category == "intent_llm":
+        n_calls = len(result.get("tool_calls") or [])
+        n_facts = len(result.get("salient_facts") or [])
+        memory_chars = len(result.get("memory_doc") or "")
+        return f"{n_calls} tool_calls · {n_facts} facts · memory_doc {memory_chars}c"
+    if category == "dispatch":
+        ack = result.get("ack") or ""
+        bytes_w = result.get("bytes_written")
+        return f"{ack}" + (f" ({bytes_w}b)" if bytes_w else "")
     return ""
 
 
