@@ -57,6 +57,9 @@ _ADAPTERS = [
     # Slow-loop adapters (Slice 9.1c)
     ("adapters.qwen_intent_adapter", "QwenIntentAdapter"),
     ("adapters.haoclaw_outbox_adapter", "HaoClawOutboxAdapter"),
+    # LID adapters for slow-loop-routed (Slice 9.2)
+    ("adapters.whisper_lid_adapter", "WhisperLIDAdapter"),
+    ("adapters.deepgram_lid_adapter", "DeepgramLIDAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:

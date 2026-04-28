@@ -84,6 +84,57 @@ def list_recipes() -> List[Dict[str, Any]]:
             "edges": [],
         },
         {
+            "id": "slow-loop-routed",
+            "name": "Slow-loop (LID → routed ASR → speaker → intent → HaoClaw)",
+            "description": (
+                "Same as slow-loop, but with an upfront Language ID stage. "
+                "LID detects the spoken language; the runner threads the "
+                "result into the ASR stage's config so a per-language ASR "
+                "(or a multilingual ASR conditioned on the detected lang) "
+                "can specialise. Use the Compare page to A/B this against "
+                "plain `slow-loop` (native multilingual) on the same clip."
+            ),
+            "is_recipe": True,
+            "stages": [
+                {
+                    "id": "lid",
+                    "category": "lid",
+                    "adapter": None,
+                    "config": {},
+                },
+                {
+                    "id": "asr",
+                    "category": "asr",
+                    "adapter": None,
+                    "config": {},
+                },
+                {
+                    "id": "speaker_tag",
+                    "category": "speaker_verify",
+                    "adapter": None,
+                    "config": {"mode": "segments", "window_s": 1.0, "hop_s": 0.5},
+                },
+                {
+                    "id": "intent",
+                    "category": "intent_llm",
+                    "adapter": None,
+                    "config": {},
+                },
+                {
+                    "id": "dispatch",
+                    "category": "dispatch",
+                    "adapter": None,
+                    "config": {},
+                },
+            ],
+            "edges": [
+                {"from": "lid", "to": "asr", "port": "language"},
+                {"from": "asr", "to": "intent", "port": "text"},
+                {"from": "speaker_tag", "to": "intent", "port": "speaker_segments"},
+                {"from": "intent", "to": "dispatch", "port": "memory_doc"},
+            ],
+        },
+        {
             "id": "slow-loop",
             "name": "Slow-loop (ASR → speaker-tag → intent → HaoClaw)",
             "description": (
