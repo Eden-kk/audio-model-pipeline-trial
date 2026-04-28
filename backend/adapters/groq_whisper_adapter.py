@@ -37,6 +37,12 @@ class GroqWhisperAdapter:
         },
     }
     cost_per_call_estimate_usd: Optional[float] = None
+    is_streaming = True   # via chunked pseudo-stream (Groq has no native streaming endpoint)
+
+    async def transcribe_stream(self, audio_path: str, config: dict):
+        from ._pseudo_stream import pseudo_stream_chunks
+        async for ev in pseudo_stream_chunks(self, audio_path, config):
+            yield ev
 
     def _key(self) -> str:
         k = os.environ.get("GROQ_API_KEY", "")

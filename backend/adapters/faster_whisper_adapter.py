@@ -108,6 +108,10 @@ class FasterWhisperAdapter:
         },
     }
     cost_per_call_estimate_usd: Optional[float] = 0.0
+    # Native streaming: faster-whisper's segments_iter is a lazy generator
+    # so we can yield partials per decoded segment rather than chunking
+    # the audio. See transcribe_stream() below.
+    is_streaming = True
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         model_name = config.get("model_name", DEFAULT_MODEL_NAME)
@@ -168,5 +172,107 @@ class FasterWhisperAdapter:
                     if info.language_probability else None
                 ),
                 "duration": duration_s,
+            },
+        }
+
+    async def transcribe_stream(self, audio_path: str, config: dict):
+        """Native segment-level streaming.
+
+        faster-whisper exposes a lazy ``segments_iter`` so each decoded
+        segment is yielded as the model finishes it. We translate every
+        segment into a cumulative-text partial; the final yield carries
+        the merged words list + metadata. Pure local CPU/GPU inference
+        — no extra cost, no extra requests, real progressive output.
+        """
+        import asyncio as _asyncio
+        import time as _time
+
+        model_name = config.get("model_name", DEFAULT_MODEL_NAME)
+        if model_name not in SUPPORTED_MODEL_NAMES:
+            raise ValueError(
+                f"Unsupported model_name '{model_name}'. "
+                f"Allowed: {SUPPORTED_MODEL_NAMES}"
+            )
+        language_in = config.get("language", "en")
+        language = None if language_in in ("auto", "", None) else language_in
+        beam_size = int(config.get("beam_size", 5))
+        word_timestamps = bool(config.get("word_timestamps", True))
+        device = config.get("device", DEVICE)
+        compute_type = config.get("compute_type", COMPUTE_TYPE)
+
+        t0 = _time.perf_counter()
+        model = _get_model(model_name, device=device, compute_type=compute_type)
+
+        # The inference itself is sync + CPU-bound; run it in a thread so
+        # the event loop can keep flushing WS frames between segments.
+        def _decode():
+            segs, inf = model.transcribe(
+                audio_path,
+                language=language,
+                beam_size=beam_size,
+                word_timestamps=word_timestamps,
+            )
+            return segs, inf
+
+        loop = _asyncio.get_event_loop()
+        segments_iter, info = await loop.run_in_executor(None, _decode)
+
+        words: List[Dict[str, Any]] = []
+        text_parts: List[str] = []
+
+        # Pull segments one at a time. Each `next()` synchronously decodes
+        # the next chunk; we wrap it in run_in_executor so we don't block
+        # the event loop, then yield the cumulative partial right after.
+        sentinel = object()
+
+        def _next(it):
+            return next(it, sentinel)
+
+        while True:
+            seg = await loop.run_in_executor(None, _next, segments_iter)
+            if seg is sentinel:
+                break
+            text_parts.append(seg.text.strip())
+            if word_timestamps and seg.words:
+                for w in seg.words:
+                    words.append({
+                        "word": w.word.strip(),
+                        "start": float(w.start),
+                        "end": float(w.end),
+                        "confidence": (
+                            float(w.probability)
+                            if w.probability is not None else None
+                        ),
+                        "speaker": None,
+                    })
+            yield {
+                "partial_text": " ".join(text_parts).strip(),
+                "is_final": False,
+            }
+
+        wall_s = _time.perf_counter() - t0
+        full_text = " ".join(text_parts).strip()
+        duration_s = float(info.duration) if info.duration else 0.0
+        detected_language = info.language or (language_in or "en")
+
+        yield {
+            "partial_text": full_text,
+            "is_final": True,
+            "text": full_text,
+            "words": words,
+            "language": detected_language,
+            "duration_s": duration_s,
+            "cost_usd": 0.0,
+            "wall_time_s": wall_s,
+            "raw_response": {
+                "model_name": model_name,
+                "device": device,
+                "compute_type": compute_type,
+                "language_probability": (
+                    float(info.language_probability)
+                    if info.language_probability else None
+                ),
+                "duration": duration_s,
+                "streaming_mode": "native_segment",
             },
         }

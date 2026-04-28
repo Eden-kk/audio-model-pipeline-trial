@@ -24,8 +24,14 @@ class CanaryQwen25BAdapter:
     outputs: List[Dict[str, str]] = NEMO_OUTPUTS
     config_schema: Dict[str, Any] = nemo_config_schema(default_lang="en")
     cost_per_call_estimate_usd: Optional[float] = 0.0
+    is_streaming = True   # via chunked pseudo-stream
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         return await transcribe_via_model_server(
             audio_path, model="canary-qwen-2.5b"
         )
+
+    async def transcribe_stream(self, audio_path: str, config: dict):
+        from ._pseudo_stream import pseudo_stream_chunks
+        async for ev in pseudo_stream_chunks(self, audio_path, config):
+            yield ev

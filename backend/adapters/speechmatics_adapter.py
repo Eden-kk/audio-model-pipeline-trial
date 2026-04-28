@@ -38,6 +38,12 @@ class SpeechmaticsAdapter:
         },
     }
     cost_per_call_estimate_usd: Optional[float] = None
+    is_streaming = True   # via chunked pseudo-stream
+
+    async def transcribe_stream(self, audio_path: str, config: dict):
+        from ._pseudo_stream import pseudo_stream_chunks
+        async for ev in pseudo_stream_chunks(self, audio_path, config):
+            yield ev
 
     def _hdr(self) -> Dict[str, str]:
         k = os.environ.get("SPEECHMATICS_API_KEY", "")
