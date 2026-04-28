@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import shutil
 import sys
@@ -38,6 +39,13 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 import httpx
+
+# Allow importing the trial-app's adapters directly so we can run real LID
+# without going through the HTTP layer. Assumes this script runs inside the
+# same venv as the backend (backend/.venv).
+_BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 
 BENCHMARK_ROOT = Path(
@@ -203,14 +211,51 @@ ALL_CLIPS = (
 # Cheap heuristics — no external API calls. The trial app's adapter
 # library already gives proper detection if/when we want to swap.
 
-def derive_language(rel_path: str) -> str:
-    """Source-dir convention: en/, zh/, es/, fr/, ja/, de/ → that lang.
-    Everything else (LibriSpeech verification clips, scenario_a, realtime
-    prompts) is English."""
+def derive_language_heuristic(rel_path: str) -> str:
+    """Heuristic fallback: source-dir convention. Used only when real LID
+    fails or returns low confidence."""
     head = rel_path.split("/", 1)[0]
     if head in ("en", "zh", "es", "fr", "ja", "de"):
         return head
     return "en"
+
+
+# Lazy-loaded WhisperLIDAdapter singleton — loaded on first call.
+_LID_ADAPTER = None
+
+
+def _get_lid_adapter():
+    global _LID_ADAPTER
+    if _LID_ADAPTER is None:
+        from adapters.whisper_lid_adapter import WhisperLIDAdapter  # type: ignore
+        _LID_ADAPTER = WhisperLIDAdapter()
+    return _LID_ADAPTER
+
+
+async def detect_language_real(
+    wav_path: Path, rel_path: str, *, min_confidence: float = 0.50
+) -> Tuple[str, Optional[float]]:
+    """Run faster-whisper-tiny LID on the audio. Returns (lang_code, confidence).
+
+    Falls back to the directory-name heuristic when the adapter fails or
+    when the model's confidence is below `min_confidence` (avoids
+    confidently mislabeling silence/noise clips)."""
+    try:
+        adapter = _get_lid_adapter()
+        out = await adapter.lid(str(wav_path), {})
+        lang = out.get("language")
+        conf = out.get("confidence")
+        if lang and conf is not None and conf >= min_confidence:
+            return str(lang), float(conf)
+        # Low confidence → fall back to source-dir heuristic
+        return derive_language_heuristic(rel_path), (
+            float(conf) if conf is not None else None
+        )
+    except Exception as e:
+        # Model load failure, missing dep, etc. — log + fall back
+        print(f"    [lid] fallback to heuristic ({type(e).__name__}: {e})",
+              file=sys.stderr)
+        return derive_language_heuristic(rel_path), None
 
 
 def derive_speaker_count(rel_path: str) -> int:
@@ -311,7 +356,7 @@ def patch_tags(
     r.raise_for_status()
 
 
-def main() -> int:
+async def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--api", default="http://localhost:8000",
                    help="trial-app backend URL")
@@ -319,6 +364,9 @@ def main() -> int:
                    help="rm -rf backend/data/clips/* before ingesting")
     p.add_argument("--data-dir", default="/Users/yvette/code/audio-model-pipeline-trial/backend/data",
                    help="trial-app DATA_DIR (only used with --purge-existing)")
+    p.add_argument("--no-real-lid", action="store_true",
+                   help="skip the WhisperLID pass; use source-dir heuristic only "
+                        "(faster but less accurate on unknown clips)")
     args = p.parse_args()
 
     if not BENCHMARK_ROOT.is_dir():
@@ -339,6 +387,7 @@ def main() -> int:
 
     by_category: dict = {}
     failed = 0
+    n_lid_fallback = 0
     for rel_path, scenarios, user_tags, note in ALL_CLIPS:
         src = BENCHMARK_ROOT / rel_path
         if not src.exists():
@@ -348,17 +397,24 @@ def main() -> int:
         try:
             clip = post_clip(args.api, src, src.name)
 
-            # Auto-tagger pass — derives the fields the user would
-            # otherwise have to set in the UI.
-            language = derive_language(rel_path)
+            # ── Auto-tagger pass ────────────────────────────────────────
             speaker_count = derive_speaker_count(rel_path)
             try:
                 snr = estimate_snr_db(src)
             except Exception:
                 snr = None
 
-            # Add SNR-bucket scenarios automatically (so the Library can
-            # filter 'clean / mid / noisy' without the user picking).
+            # Real LID via WhisperLIDAdapter (~200 ms on CPU per clip)
+            if args.no_real_lid:
+                language = derive_language_heuristic(rel_path)
+                lid_conf = None
+            else:
+                language, lid_conf = await detect_language_real(src, rel_path)
+                # Track fallbacks for the final summary
+                if lid_conf is None or lid_conf < 0.50:
+                    n_lid_fallback += 1
+
+            # Add SNR-bucket scenarios automatically
             if snr is not None and snr == snr:  # not NaN
                 if snr >= 15:
                     scenarios = list(scenarios) + ["snr-clean"]
@@ -373,8 +429,10 @@ def main() -> int:
             )
             cat = scenarios[0]
             by_category.setdefault(cat, []).append((clip["id"], src.name, note))
-            print(f"  ✓ [{cat}] {src.name}  →  {clip['id']:8}…  "
-                  f"lang={language}  snr={snr if snr else '—'}dB  spk={speaker_count}")
+            conf_str = f" ({lid_conf:.2f})" if lid_conf is not None else ""
+            print(f"  ✓ [{cat}] {src.name}  →  {clip['id'][:8]}…  "
+                  f"lang={language}{conf_str}  "
+                  f"snr={snr if snr else '—'}dB  spk={speaker_count}")
         except Exception as e:
             print(f"  ✗ FAILED: {rel_path}: {e}", file=sys.stderr)
             failed += 1
@@ -387,8 +445,11 @@ def main() -> int:
     total = sum(len(v) for v in by_category.values())
     print("-" * 60)
     print(f"  {'TOTAL':30}  {total:>3} clips, {failed} failed")
+    if not args.no_real_lid:
+        print(f"  {'LID confidence < 0.50 → fallback':30}  "
+              f"{n_lid_fallback:>3} clip{'s' if n_lid_fallback != 1 else ''}")
     return 0 if failed == 0 else 3
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))

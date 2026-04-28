@@ -69,26 +69,76 @@ class WhisperLIDAdapter:
 
         model = _get_model(model_name, device, compute_type)
 
-        # faster-whisper exposes detect_language() that returns
-        # (lang_code, lang_probability, dict_of_all_probs).
+        # faster-whisper >= 1.0 expects either a file path OR a numpy
+        # array, but `detect_language(...)` has historically been
+        # finicky about path inputs across versions. The robust path
+        # is to call `model.transcribe(...)` with `language=None`,
+        # which always returns info.language + info.language_probability
+        # populated regardless of major-version shifts.
         t0 = time.perf_counter()
-        try:
-            lang_code, lang_prob, all_probs = model.detect_language(audio_path)
-        except TypeError:
-            # Older faster-whisper returns (lang, prob) only
-            lang_code, lang_prob = model.detect_language(audio_path)
-            all_probs = {lang_code: lang_prob}
+        # We don't need the transcript — just the side-effect language
+        # detection. beam_size=1 keeps it fast.
+        segments_iter, info = model.transcribe(
+            audio_path,
+            language=None,
+            beam_size=1,
+            best_of=1,
+            without_timestamps=True,
+            vad_filter=False,
+        )
+        # Consume the generator (lazy in faster-whisper) so info is
+        # finalised. We discard the segments.
+        for _ in segments_iter:
+            break  # one segment is enough to populate info
         wall_s = time.perf_counter() - t0
 
-        candidates = []
-        if isinstance(all_probs, dict):
-            for code, prob in sorted(all_probs.items(),
-                                     key=lambda kv: -kv[1])[:top_k]:
-                candidates.append({"language": code, "confidence": float(prob)})
+        lang_code = info.language or "en"
+        lang_prob = float(info.language_probability or 0.0)
+
+        # detect_language() (when it does work) returns the dict of
+        # all-language probs; transcribe() doesn't expose that. We
+        # synthesize a single-candidate list to keep the output shape
+        # consistent.
+        candidates = [{"language": lang_code, "confidence": lang_prob}]
+
+        # As a bonus second-pass, run detect_language() on the loaded
+        # audio for the full top-K distribution. Defensive — if it
+        # errors, we just keep the single-candidate list.
+        try:
+            import numpy as np
+            import soundfile as sf
+            audio, sr = sf.read(audio_path, dtype="float32")
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            # faster-whisper's detect_language wants 16 kHz; cheap resample.
+            if sr != 16000:
+                # linear-interpolate (good enough for LID)
+                ratio = 16000.0 / sr
+                new_n = int(audio.size * ratio)
+                idx = np.minimum(
+                    (np.arange(new_n) / ratio).astype(np.int64),
+                    audio.size - 1,
+                )
+                audio = audio[idx].astype(np.float32)
+            res = model.detect_language(audio[: 16000 * 30])
+            if isinstance(res, tuple) and len(res) >= 3:
+                _lang2, _prob2, all_probs = res
+                if isinstance(all_probs, dict):
+                    candidates = [
+                        {"language": code, "confidence": float(prob)}
+                        for code, prob in sorted(
+                            all_probs.items(), key=lambda kv: -kv[1]
+                        )[:top_k]
+                    ]
+                    if candidates:
+                        lang_code = candidates[0]["language"]
+                        lang_prob = candidates[0]["confidence"]
+        except Exception:
+            pass
 
         return {
             "language": lang_code,
-            "confidence": float(lang_prob),
+            "confidence": lang_prob,
             "candidates": candidates,
             "wall_time_s": wall_s,
             "cost_usd": 0.0,
