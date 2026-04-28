@@ -56,11 +56,30 @@ interface StartOptions {
  *
  *  vite.config.ts aliases `onnxruntime-web` → `ort.bundle.min.mjs` and
  *  `onnxruntime-web/wasm` → `ort.wasm.bundle.min.mjs`. Both bundles
- *  INLINE the wasm into the JS — no separate fetch needed. We must NOT
- *  set `env.wasm.wasmPaths` here: doing so flips ORT into the externally-
- *  fetched mode where it dynamically imports `ort-wasm-simd-threaded.mjs`
- *  from `wasmPaths`. Vite refuses to serve module imports from /public,
- *  and the dev server returns "Failed to load url /vad/ort-wasm-...mjs".
+ *  INLINE the wasm into the JS — but **vad-web bundles its OWN copy of
+ *  ORT inside its prebundle** (separate module instance from our
+ *  aliased onnxruntime-web), so our `numThreads`/`proxy` settings on the
+ *  outer `ort` object don't affect what vad-web uses internally.
+ *
+ *  vad-web's `MicVAD.new` unconditionally writes its `onnxWASMBasePath`
+ *  option into ITS embedded `ort.env.wasm.wasmPaths` (see
+ *  vad-web/dist/index.js → the `exports.ort.env.wasm.wasmPaths = ...`
+ *  line). The library's default for `onnxWASMBasePath` is `"./"`, which
+ *  flips its embedded ORT into externally-fetched-wasm mode and bakes a
+ *  RELATIVE path `"./"` into the wasm-loader's `locateFile`. The browser
+ *  resolves `"./ort-wasm-simd-threaded.wasm"` against the document URL
+ *  (http://localhost:5173/realtime), gets `/ort-wasm-simd-threaded.wasm`,
+ *  hits Vite's SPA fallback, receives index.html, and tries to compile
+ *  HTML as wasm → "expected magic word 00 61 73 6d, found 3c 21 64 6f"
+ *  (3c 21 64 6f = `<!do…`).
+ *
+ *  Fix: pass an explicit `onnxWASMBasePath` pointing at a URL Vite will
+ *  serve as a module. `/node_modules/onnxruntime-web/dist/` is handled
+ *  by the `ortWasmWorkerPlugin` middleware in vite.config.ts which
+ *  resolves the wasm/.mjs files to their real on-disk locations. We
+ *  cannot use `/vad/` (where the files also exist) because Vite's dev
+ *  server refuses to serve files from `/public/` with the `?import`
+ *  query suffix that dynamic imports get — it returns a 500 with HTML.
  *
  *  Single-thread + no-proxy is still useful — keeps the binary small
  *  and avoids spawning a worker that the browser sandbox might block.
@@ -106,9 +125,16 @@ export async function startVAD(opts: StartOptions): Promise<TurnDetectorHandle> 
       // file. That's a plain HTTP fetch of a static asset (NOT a JS module
       // import), so /public/vad/ is fine for it.
       baseAssetPath: VAD_BASE_PATH,
-      // Do NOT set onnxWASMBasePath — that points ORT at /vad/ which
-      // would trigger the dynamic .mjs import that Vite blocks. We rely
-      // on the aliased ort bundle's inlined wasm instead.
+      // Point vad-web's embedded ORT at the actual ORT dist folder under
+      // node_modules (intercepted by the ortWasmWorkerPlugin in
+      // vite.config.ts, which serves the .mjs / .wasm files from
+      // node_modules/onnxruntime-web/dist/ regardless of the resolved
+      // pnpm path). Without this, vad-web's default onnxWASMBasePath of
+      // "./" makes the wasm fetch land on the document URL → SPA → HTML
+      // → wasm magic-word error. See loadVADLib() above for the full
+      // explanation. /vad/ doesn't work for this slot because Vite's
+      // dev server 500s on `?import` requests against /public/ files.
+      onnxWASMBasePath: '/node_modules/onnxruntime-web/dist/',
       model: 'v5',
       positiveSpeechThreshold: speechThreshold,
       negativeSpeechThreshold: silenceThreshold,
