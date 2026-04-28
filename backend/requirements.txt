@@ -4,6 +4,7 @@ python-multipart
 soundfile
 numpy<2
 httpx
+websockets>=12         # Slice 3 streaming adapters
 pydantic>=2.0
 python-dotenv
 

@@ -100,10 +100,20 @@ app.add_middleware(
 # In-memory map of run_id → WebSocket (only one socket per run in Slice 0)
 _ws_connections: Dict[str, WebSocket] = {}
 
+# Per-run event buffer so streaming events emitted before the client's
+# WebSocket connects aren't lost. On WS accept we replay this buffer once,
+# then deliver live events. Buffers self-clean when the WS closes OR when
+# a `StageCompleted`/`StageFailed`/`RunFinished` event lands and stays
+# unread for >30 s.
+_event_buffer: Dict[str, list] = {}
+
 
 # ─── WS event helpers ─────────────────────────────────────────────────────────
 
 async def _ws_send(run_id: str, event: dict) -> None:
+    """Emit an event to the run's WS subscriber; buffer it either way so a
+    late-connecting client gets the full timeline on connect."""
+    _event_buffer.setdefault(run_id, []).append(event)
     ws = _ws_connections.get(run_id)
     if ws:
         try:
@@ -325,9 +335,39 @@ async def create_run(req: RunRequest):
         "timestamp": now,
     })
 
+    is_streaming = bool(getattr(adapter, "is_streaming", False))
     t0 = time.perf_counter()
     try:
-        result = await adapter.transcribe(str(p), req.config)
+        if is_streaming:
+            # Streaming path — iterate the async generator, emit
+            # StageProgress per partial, capture the final yield as the
+            # canonical result.
+            result: Dict[str, Any] = {}
+            partial_count = 0
+            async for ev in adapter.transcribe_stream(str(p), req.config):
+                if ev.get("is_final"):
+                    result = {k: v for k, v in ev.items()
+                              if k not in ("is_final", "partial_text")}
+                    # Promote partial_text → text if the final yield omitted it
+                    result.setdefault("text", ev.get("partial_text", ""))
+                    break
+                partial_count += 1
+                await _ws_send(run_id, {
+                    "event": "StageProgress",
+                    "run_id": run_id,
+                    "adapter": req.adapter,
+                    "partial_text": ev.get("partial_text", ""),
+                    "partial_index": partial_count,
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                })
+            if not result:
+                raise RuntimeError(
+                    "streaming adapter ended without is_final yield"
+                )
+        else:
+            # Batch path — single synchronous transcribe call.
+            result = await adapter.transcribe(str(p), req.config)
+
         latency_ms = (time.perf_counter() - t0) * 1000.0
         finished_at = datetime.datetime.utcnow().isoformat() + "Z"
 
@@ -339,14 +379,18 @@ async def create_run(req: RunRequest):
         run.result = {k: v for k, v in result.items() if k != "raw_response"}
         run.raw_response = result.get("raw_response")
 
-        # Emit StagePartial (transcript preview) then StageCompleted
-        await _ws_send(run_id, {
-            "event": "StagePartial",
-            "run_id": run_id,
-            "adapter": req.adapter,
-            "text": run.output_preview,
-            "timestamp": finished_at,
-        })
+        # For batch adapters, emit a StagePartial first so the UI can echo
+        # the same incremental shape as streaming. (Streaming adapters
+        # already emitted StageProgress events.)
+        if not is_streaming:
+            await _ws_send(run_id, {
+                "event": "StagePartial",
+                "run_id": run_id,
+                "adapter": req.adapter,
+                "text": run.output_preview,
+                "timestamp": finished_at,
+            })
+
         await _ws_send(run_id, {
             "event": "StageCompleted",
             "run_id": run_id,
@@ -355,6 +399,7 @@ async def create_run(req: RunRequest):
             "cost_usd": run.cost_usd,
             "result": run.result,
             "timestamp": finished_at,
+            "is_streaming": is_streaming,
         })
 
     except Exception as exc:
@@ -483,20 +528,30 @@ async def create_recipe_run(req: RecipeRunRequest):
 
 @app.websocket("/ws/run/{run_id}")
 async def ws_run(websocket: WebSocket, run_id: str):
-    """Clients connect here *before* (or shortly after) POST /api/runs.
-    Events are sent as JSON objects with an `event` field.
+    """Stream per-stage events for a run.
+
+    Race handling: a client may connect AFTER the run has started (or even
+    after it's finished, for short batch runs). We replay the per-run
+    event buffer first thing on connect, then forward live events for the
+    rest of the session.
     """
     await websocket.accept()
     _ws_connections[run_id] = websocket
     try:
-        # Keep the socket alive until the client closes it
+        # Replay anything already emitted before the WS opened
+        for ev in list(_event_buffer.get(run_id, [])):
+            try:
+                await websocket.send_json(ev)
+            except Exception:
+                break
+
+        # Then pump keepalives / forward live events
         while True:
             try:
                 msg = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
                 if msg == "ping":
                     await websocket.send_json({"event": "pong"})
             except asyncio.TimeoutError:
-                # send a keepalive ping
                 try:
                     await websocket.send_json({"event": "keepalive"})
                 except Exception:
