@@ -266,6 +266,13 @@ export async function startRun(
   })
 }
 
+/** GET /api/runs/{id} — fetch a saved run record. Used as a defensive
+ *  fallback after a streaming run's StageCompleted, in case the WS event
+ *  arrived without a full result.text (race vs server-side buffer). */
+export async function getRun(runId: string): Promise<Run> {
+  return apiFetch<Run>(`/api/runs/${runId}`)
+}
+
 // ---------------------------------------------------------------------------
 // Enrollment (Slice 9.1e + 9.4)
 // ---------------------------------------------------------------------------

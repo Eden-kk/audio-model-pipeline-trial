@@ -9,6 +9,7 @@ import {
   clipAudioUrl,
   uploadClip,
   startRun,
+  getRun,
   connectRunWS,
   type Adapter,
   type Clip,
@@ -268,6 +269,29 @@ export default function Playground() {
           setRunState('done')
           setStatusMsg('Done')
           wsCleanup?.()
+
+          // Defensive reconcile: fetch the canonical run record from REST.
+          // The WS path occasionally lands without a complete result.text
+          // (we've seen the streaming `partial_text` accumulator fall a few
+          // chunks short on long clips when buffer-replay & live frames
+          // interleave). The saved run always has the full text — pull it
+          // and overwrite if it's longer than what we just rendered.
+          getRun(run.id).then((authoritative) => {
+            const canonical = (authoritative.result?.text ?? '').trim()
+            const have = (collected[0]?.transcript ?? '').trim()
+            if (canonical && canonical.length > have.length) {
+              collected[0] = {
+                ...collected[0],
+                transcript: canonical,
+                latency_ms: authoritative.latency_ms ?? collected[0].latency_ms,
+                raw_response: authoritative.result?.raw_response
+                           ?? authoritative.result
+                           ?? collected[0].raw_response,
+                is_final: true,
+              }
+              setResults([...collected])
+            }
+          }).catch(() => { /* best-effort */ })
         }
 
         if (etype === 'StageFailed') {
