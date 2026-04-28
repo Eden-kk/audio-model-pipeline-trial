@@ -164,6 +164,73 @@ export async function startRun(
 }
 
 // ---------------------------------------------------------------------------
+// Recipes (multi-stage pipelines)
+// ---------------------------------------------------------------------------
+
+export interface RecipeStage {
+  id: string
+  category: ModelCategory
+  adapter: string | null   // null = placeholder, user picks per-stage
+  config: Record<string, unknown>
+}
+
+export interface Recipe {
+  id: string
+  name: string
+  description: string
+  is_recipe: true
+  stages: RecipeStage[]
+  edges: { from: string; to: string; port: string }[]
+}
+
+export interface StageRun {
+  stage_id: string
+  category: ModelCategory
+  adapter: string | null
+  started_at: string
+  finished_at: string
+  latency_ms: number
+  cost_usd: number
+  input_preview: string
+  output_preview: string
+  result: Record<string, unknown>
+  error: string | null
+}
+
+export interface RecipeRun {
+  id: string
+  clip_id: string
+  recipe_id: string
+  started_at: string
+  finished_at: string
+  stages: StageRun[]
+  total_latency_ms: number
+  total_cost_usd: number
+  error: string | null
+}
+
+export async function listRecipes(): Promise<Recipe[]> {
+  return apiFetch<Recipe[]>('/api/recipes')
+}
+
+export async function startRecipeRun(
+  clipId: string,
+  recipeId: string,
+  stageAdapters: Record<string, string>,
+  stageConfigs: Record<string, Record<string, unknown>> = {},
+): Promise<RecipeRun> {
+  return apiFetch<RecipeRun>('/api/runs/recipe', {
+    method: 'POST',
+    body: JSON.stringify({
+      clip_id: clipId,
+      recipe_id: recipeId,
+      stage_adapters: stageAdapters,
+      stage_configs: stageConfigs,
+    }),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket
 // ---------------------------------------------------------------------------
 

@@ -74,6 +74,10 @@ from storage.clips import (
 )
 from storage.runs import Run, append_run, get_run, new_run_id
 
+# ─── Pipelines ────────────────────────────────────────────────────────────────
+from pipelines.recipes import get_recipe, list_recipes
+from pipelines.runner import run_pipeline
+
 # ─── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="audio-trial-backend", version="0.1.0")
 
@@ -340,6 +344,104 @@ async def fetch_run(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return RunOut(**run.to_dict())
+
+
+# ── Recipes ───────────────────────────────────────────────────────────────────
+
+@app.get("/api/recipes")
+async def get_recipes():
+    """List built-in pipeline recipes (Slice 5).
+
+    Each recipe declares stages with category placeholders; the client picks
+    a concrete adapter per stage when starting a run.
+    """
+    return list_recipes()
+
+
+@app.get("/api/recipes/{recipe_id}")
+async def get_recipe_one(recipe_id: str):
+    r = get_recipe(recipe_id)
+    if not r:
+        raise HTTPException(status_code=404, detail=f"Recipe {recipe_id!r} not found")
+    return r
+
+
+class RecipeRunRequest(BaseModel):
+    clip_id: str
+    recipe_id: str
+    # stage_id → adapter_id (resolves the recipe's `adapter: None` placeholders)
+    stage_adapters: Dict[str, str]
+    # Optional per-stage config override
+    stage_configs: Dict[str, Dict[str, Any]] = {}
+
+
+class RecipeRunOut(BaseModel):
+    id: str
+    clip_id: str
+    recipe_id: str
+    started_at: str
+    finished_at: str
+    stages: list
+    total_latency_ms: float
+    total_cost_usd: float
+    error: Optional[str]
+
+
+@app.post("/api/runs/recipe", response_model=RecipeRunOut, status_code=201)
+async def create_recipe_run(req: RecipeRunRequest):
+    """Run a multi-stage recipe pipeline against a clip.
+
+    Per-stage adapter override is mandatory because recipes ship with
+    `adapter: None` placeholders. The runner walks stages in order, threading
+    each stage's output into the next (ASR text → TTS input, etc).
+    Per-stage events stream over /ws/run/{id}.
+    """
+    clip = get_clip(req.clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail=f"Clip {req.clip_id!r} not found")
+
+    p = audio_path(req.clip_id)
+    if not p or not p.exists():
+        raise HTTPException(status_code=404, detail="Audio file for clip not found")
+
+    recipe = get_recipe(req.recipe_id)
+    if not recipe:
+        raise HTTPException(status_code=404, detail=f"Recipe {req.recipe_id!r} not found")
+
+    run_id = new_run_id()
+    started_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    async def _on_event(payload: Dict[str, Any]) -> None:
+        await _ws_send(run_id, {**payload, "run_id": run_id})
+
+    await _on_event({"event": "RunStarted", "recipe_id": req.recipe_id})
+
+    out = await run_pipeline(
+        pipeline=recipe,
+        clip_audio_path=str(p),
+        stage_overrides=req.stage_adapters,
+        stage_configs=req.stage_configs,
+        registry=registry,
+        on_event=_on_event,
+    )
+
+    finished_at = datetime.datetime.utcnow().isoformat() + "Z"
+    await _on_event({"event": "RunFinished",
+                     "total_latency_ms": out["total_latency_ms"],
+                     "total_cost_usd": out["total_cost_usd"],
+                     "error": out["error"]})
+
+    return RecipeRunOut(
+        id=run_id,
+        clip_id=req.clip_id,
+        recipe_id=req.recipe_id,
+        started_at=started_at,
+        finished_at=finished_at,
+        stages=out["stages"],
+        total_latency_ms=out["total_latency_ms"],
+        total_cost_usd=out["total_cost_usd"],
+        error=out["error"],
+    )
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
