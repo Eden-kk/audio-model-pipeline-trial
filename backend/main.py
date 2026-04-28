@@ -54,6 +54,9 @@ _ADAPTERS = [
     ("adapters.parakeet_adapter", "ParakeetAdapter"),
     ("adapters.canary_1b_flash_adapter", "Canary1BFlashAdapter"),
     ("adapters.canary_qwen_25b_adapter", "CanaryQwen25BAdapter"),
+    # Slow-loop adapters (Slice 9.1c)
+    ("adapters.qwen_intent_adapter", "QwenIntentAdapter"),
+    ("adapters.haoclaw_outbox_adapter", "HaoClawOutboxAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
