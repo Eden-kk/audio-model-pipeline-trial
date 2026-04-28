@@ -21,6 +21,10 @@ interface StageResult {
   latency_ms?: number
   raw_response?: unknown
   error?: string
+  // Streaming-only — renders a typing cursor + monotonically growing text
+  is_streaming?: boolean
+  partial_count?: number
+  is_final?: boolean
 }
 
 type RunState = 'idle' | 'uploading' | 'running' | 'done' | 'error'
@@ -102,76 +106,96 @@ export default function Playground() {
     setRunState('running')
     setStatusMsg('Running…')
 
-    // Open WS first so any streaming events (Slice 3+ adapters) aren't missed.
-    // Today the run is synchronous and finishes inside startRun() — we keep the
-    // WS open as an overlay that works for both modes.
-    const collected: StageResult[] = []
+    const isStreaming = !!selectedMeta?.is_streaming
+    const collected: StageResult[] = [{
+      stage_id: selectedAdapter,
+      transcript: '',
+      is_streaming: isStreaming,
+      partial_count: 0,
+      is_final: false,
+    }]
+    setResults([...collected])
     let wsCleanup: (() => void) | null = null
 
-    let run
-    try {
-      run = await startRun(clip.id, selectedAdapter)
-    } catch (err: unknown) {
+    // Kick off the POST. For streaming adapters, the backend returns
+    // immediately with an in-flight run_id; for batch, it waits for the
+    // synchronous transcribe to finish.
+    const postPromise = startRun(clip.id, selectedAdapter).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err)
       setRunError(`Run failed: ${msg}`)
       setRunState('error')
-      return
-    }
+      return null
+    })
 
-    // Surface backend-reported errors (auth failure, ffmpeg fail, etc.).
+    const run = await postPromise
+    if (!run) return
+
     if (run.error) {
       setRunError(`Adapter error: ${run.error}`)
       setRunState('error')
       return
     }
 
-    // ── PRIMARY: render the synchronous result immediately ──────────────────
-    // The backend's POST /api/runs is fully synchronous today; the full result
-    // is in the response body. WS events are only emitted by streaming
-    // adapters (Slice 3+) and serve to incrementally refine this result.
-    const text = run.result?.text ?? run.output_preview ?? ''
-    collected.push({
-      stage_id: run.adapter,
-      transcript: text,
-      latency_ms: run.latency_ms ?? undefined,
-      raw_response: run.result?.raw_response ?? run.result,
-    })
-    setResults([...collected])
-    setRunState('done')
-    setStatusMsg('Done')
+    // ── Streaming branch: response carries empty text; WS will stream
+    // partials in real time. We open WS, render token-by-token, mark done
+    // on StageCompleted.
+    // ── Batch branch:    response carries the full text; we render that
+    // immediately, then attach WS as a passive overlay (it'll deliver one
+    // StagePartial + StageCompleted that match the response).
+    if (!isStreaming) {
+      const text = run.result?.text ?? run.output_preview ?? ''
+      collected[0] = {
+        ...collected[0],
+        transcript: text,
+        latency_ms: run.latency_ms ?? undefined,
+        raw_response: run.result?.raw_response ?? run.result,
+        is_final: true,
+      }
+      setResults([...collected])
+      setRunState('done')
+      setStatusMsg('Done')
+    } else {
+      setStatusMsg('Streaming…')
+    }
 
-    // ── OPTIONAL: streaming overlay via WebSocket ───────────────────────────
     wsCleanup = connectRunWS(
       run.id,
       (ev) => {
         setEvents((prev) => [...prev, ev])
+        const etype = ev.event ?? ev.type
 
-        if (ev.type === 'stage.progress') {
-          // Token-by-token / chunk-by-chunk update for streaming adapters.
-          const partial = (ev.data.transcript as string | undefined)
-                       ?? (ev.data.text as string | undefined)
-          if (partial != null) {
-            collected[0] = { ...collected[0], transcript: partial }
-            setResults([...collected])
+        if (etype === 'StageProgress') {
+          const partial = ev.partial_text ?? ''
+          collected[0] = {
+            ...collected[0],
+            transcript: partial,
+            partial_count: (collected[0].partial_count ?? 0) + 1,
+            is_final: false,
           }
-        }
-
-        if (ev.type === 'stage.finished') {
-          const final: StageResult = {
-            stage_id: ev.stage_id ?? collected[0]?.stage_id,
-            transcript: (ev.data.transcript as string | undefined)
-                     ?? (ev.data.output_preview as string | undefined)
-                     ?? collected[0]?.transcript,
-            latency_ms: (ev.data.latency_ms as number | undefined)
-                     ?? collected[0]?.latency_ms,
-            raw_response: ev.data.raw_response ?? collected[0]?.raw_response,
-          }
-          collected[0] = final
           setResults([...collected])
         }
 
-        if (ev.type === 'run.error') {
-          setRunError((ev.data.error as string | undefined) ?? 'Unknown error')
+        if (etype === 'StageCompleted') {
+          const finalText = (ev.result?.text as string | undefined)
+                         ?? collected[0]?.transcript
+                         ?? ''
+          collected[0] = {
+            ...collected[0],
+            transcript: finalText,
+            latency_ms: ev.latency_ms ?? collected[0].latency_ms,
+            raw_response: (ev.result?.raw_response as unknown)
+                       ?? ev.result
+                       ?? collected[0].raw_response,
+            is_final: true,
+          }
+          setResults([...collected])
+          setRunState('done')
+          setStatusMsg('Done')
+          wsCleanup?.()
+        }
+
+        if (etype === 'StageFailed') {
+          setRunError(ev.error ?? 'Unknown error')
           setRunState('error')
           wsCleanup?.()
         }
@@ -339,10 +363,27 @@ export default function Playground() {
 
             <div className="px-5 py-4">
               {primaryResult?.transcript ? (
-                <p className="text-gray-900 leading-relaxed whitespace-pre-wrap">{primaryResult.transcript}</p>
+                <p className="text-gray-900 leading-relaxed whitespace-pre-wrap">
+                  {primaryResult.transcript}
+                  {primaryResult.is_streaming && !primaryResult.is_final && (
+                    <span
+                      className="inline-block w-2 h-5 bg-gray-900 ml-0.5 align-middle animate-pulse"
+                      aria-hidden="true"
+                    />
+                  )}
+                </p>
               ) : (
                 <p className="text-gray-500 italic text-sm">
-                  {runState === 'done' ? 'No transcript returned.' : 'Waiting for transcript…'}
+                  {runState === 'done' ? 'No transcript returned.'
+                    : primaryResult?.is_streaming ? 'Connecting to streaming model…'
+                    : 'Waiting for transcript…'}
+                </p>
+              )}
+              {primaryResult?.is_streaming && (primaryResult.partial_count ?? 0) > 0 && (
+                <p className="text-xs text-gray-500 mt-2">
+                  {primaryResult.is_final
+                    ? `final after ${primaryResult.partial_count} partial${primaryResult.partial_count === 1 ? '' : 's'}`
+                    : `partial #${primaryResult.partial_count} · streaming live`}
                 </p>
               )}
             </div>
@@ -379,8 +420,13 @@ export default function Playground() {
             <div className="mt-2 bg-white border border-gray-200 rounded-lg p-3 overflow-auto max-h-48 space-y-1">
               {events.map((ev, i) => (
                 <div key={i} className="font-mono text-gray-700">
-                  <span className="text-gray-900 font-semibold">{ev.type}</span>
-                  {ev.stage_id && <span className="text-gray-500 ml-1">({ev.stage_id})</span>}
+                  <span className="text-gray-900 font-semibold">{ev.event ?? ev.type}</span>
+                  {ev.adapter && <span className="text-gray-500 ml-1">({ev.adapter})</span>}
+                  {ev.partial_text != null && (
+                    <span className="text-gray-500 ml-1">
+                      → {ev.partial_text.slice(0, 50)}{ev.partial_text.length > 50 ? '…' : ''}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

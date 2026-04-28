@@ -300,6 +300,90 @@ class RunOut(BaseModel):
     error: Optional[str]
 
 
+# In-memory cache of in-flight runs so GET /api/runs/{id} works mid-stream.
+_active_runs: Dict[str, Run] = {}
+
+
+async def _execute_run(run: Run, adapter: Any, audio_file: Path) -> None:
+    """Run an adapter against an audio file, streaming progress events to
+    the per-run WS. Updates the run object in place; persists via append_run
+    only on completion or failure."""
+    run_id = run.id
+    is_streaming = bool(getattr(adapter, "is_streaming", False))
+    t0 = time.perf_counter()
+    req_config = run.config
+
+    try:
+        if is_streaming:
+            result: Dict[str, Any] = {}
+            partial_count = 0
+            async for ev in adapter.transcribe_stream(str(audio_file), req_config):
+                if ev.get("is_final"):
+                    result = {k: v for k, v in ev.items()
+                              if k not in ("is_final", "partial_text")}
+                    result.setdefault("text", ev.get("partial_text", ""))
+                    break
+                partial_count += 1
+                await _ws_send(run_id, {
+                    "event": "StageProgress",
+                    "run_id": run_id,
+                    "adapter": run.adapter,
+                    "partial_text": ev.get("partial_text", ""),
+                    "partial_index": partial_count,
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                })
+            if not result:
+                raise RuntimeError("streaming adapter ended without is_final yield")
+        else:
+            result = await adapter.transcribe(str(audio_file), req_config)
+
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        finished_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+        run.finished_at = finished_at
+        run.latency_ms = latency_ms
+        run.cost_usd = result.get("cost_usd")
+        run.input_preview = audio_file.name
+        run.output_preview = (result.get("text", "") or "")[:200]
+        run.result = {k: v for k, v in result.items() if k != "raw_response"}
+        run.raw_response = result.get("raw_response")
+
+        if not is_streaming:
+            await _ws_send(run_id, {
+                "event": "StagePartial",
+                "run_id": run_id,
+                "adapter": run.adapter,
+                "text": run.output_preview,
+                "timestamp": finished_at,
+            })
+
+        await _ws_send(run_id, {
+            "event": "StageCompleted",
+            "run_id": run_id,
+            "adapter": run.adapter,
+            "latency_ms": latency_ms,
+            "cost_usd": run.cost_usd,
+            "result": run.result,
+            "timestamp": finished_at,
+            "is_streaming": is_streaming,
+        })
+
+    except Exception as exc:
+        finished_at = datetime.datetime.utcnow().isoformat() + "Z"
+        run.finished_at = finished_at
+        run.error = f"{type(exc).__name__}: {exc}"
+        await _ws_send(run_id, {
+            "event": "StageFailed",
+            "run_id": run_id,
+            "adapter": run.adapter,
+            "error": run.error,
+            "timestamp": finished_at,
+        })
+
+    append_run(run)
+    _active_runs.pop(run_id, None)
+
+
 @app.post("/api/runs", response_model=RunOut, status_code=201)
 async def create_run(req: RunRequest):
     # Validate clip
@@ -326,8 +410,8 @@ async def create_run(req: RunRequest):
         config=req.config,
         started_at=now,
     )
+    _active_runs[run_id] = run
 
-    # Emit StageStarted
     await _ws_send(run_id, {
         "event": "StageStarted",
         "run_id": run_id,
@@ -336,90 +420,26 @@ async def create_run(req: RunRequest):
     })
 
     is_streaming = bool(getattr(adapter, "is_streaming", False))
-    t0 = time.perf_counter()
-    try:
-        if is_streaming:
-            # Streaming path — iterate the async generator, emit
-            # StageProgress per partial, capture the final yield as the
-            # canonical result.
-            result: Dict[str, Any] = {}
-            partial_count = 0
-            async for ev in adapter.transcribe_stream(str(p), req.config):
-                if ev.get("is_final"):
-                    result = {k: v for k, v in ev.items()
-                              if k not in ("is_final", "partial_text")}
-                    # Promote partial_text → text if the final yield omitted it
-                    result.setdefault("text", ev.get("partial_text", ""))
-                    break
-                partial_count += 1
-                await _ws_send(run_id, {
-                    "event": "StageProgress",
-                    "run_id": run_id,
-                    "adapter": req.adapter,
-                    "partial_text": ev.get("partial_text", ""),
-                    "partial_index": partial_count,
-                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-                })
-            if not result:
-                raise RuntimeError(
-                    "streaming adapter ended without is_final yield"
-                )
-        else:
-            # Batch path — single synchronous transcribe call.
-            result = await adapter.transcribe(str(p), req.config)
 
-        latency_ms = (time.perf_counter() - t0) * 1000.0
-        finished_at = datetime.datetime.utcnow().isoformat() + "Z"
+    if is_streaming:
+        # Streaming: kick off the work in the background and return the run
+        # record immediately so the client can open WS to watch live partials.
+        # The response carries the placeholder run; GET /api/runs/{id} or the
+        # WS StageCompleted event delivers the final result.
+        asyncio.create_task(_execute_run(run, adapter, p))
+        return RunOut(**run.to_dict())
 
-        run.finished_at = finished_at
-        run.latency_ms = latency_ms
-        run.cost_usd = result.get("cost_usd")
-        run.input_preview = str(p.name)
-        run.output_preview = (result.get("text", "") or "")[:200]
-        run.result = {k: v for k, v in result.items() if k != "raw_response"}
-        run.raw_response = result.get("raw_response")
-
-        # For batch adapters, emit a StagePartial first so the UI can echo
-        # the same incremental shape as streaming. (Streaming adapters
-        # already emitted StageProgress events.)
-        if not is_streaming:
-            await _ws_send(run_id, {
-                "event": "StagePartial",
-                "run_id": run_id,
-                "adapter": req.adapter,
-                "text": run.output_preview,
-                "timestamp": finished_at,
-            })
-
-        await _ws_send(run_id, {
-            "event": "StageCompleted",
-            "run_id": run_id,
-            "adapter": req.adapter,
-            "latency_ms": latency_ms,
-            "cost_usd": run.cost_usd,
-            "result": run.result,
-            "timestamp": finished_at,
-            "is_streaming": is_streaming,
-        })
-
-    except Exception as exc:
-        finished_at = datetime.datetime.utcnow().isoformat() + "Z"
-        run.finished_at = finished_at
-        run.error = f"{type(exc).__name__}: {exc}"
-        await _ws_send(run_id, {
-            "event": "StageFailed",
-            "run_id": run_id,
-            "adapter": req.adapter,
-            "error": run.error,
-            "timestamp": finished_at,
-        })
-
-    append_run(run)
+    # Batch path — execute synchronously so the response carries the result.
+    await _execute_run(run, adapter, p)
     return RunOut(**run.to_dict())
 
 
 @app.get("/api/runs/{run_id}", response_model=RunOut)
 async def fetch_run(run_id: str):
+    # Try the active in-memory record first (mid-stream runs); fall back to
+    # the persisted JSONL store after the run finishes.
+    if run_id in _active_runs:
+        return RunOut(**_active_runs[run_id].to_dict())
     run = get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")

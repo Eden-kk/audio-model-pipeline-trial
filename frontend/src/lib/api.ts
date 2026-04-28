@@ -84,21 +84,33 @@ export interface Run {
   error: string | null
 }
 
-// WebSocket event shapes
-export type RunEventType =
-  | 'run.started'
-  | 'stage.started'
-  | 'stage.progress'
-  | 'stage.finished'
-  | 'run.finished'
-  | 'run.error'
+// WebSocket event shapes — backend emits the legacy event names
+// (StageStarted / StageProgress / StagePartial / StageCompleted /
+// StageFailed); the runner currently uses the `event` key.  Keep the
+// new `type` field too for forward-compat once the runner migrates.
+export type StageEventName =
+  | 'StageStarted'
+  | 'StageProgress'   // streaming-only — partial transcripts
+  | 'StagePartial'    // batch-shaped final preview
+  | 'StageCompleted'
+  | 'StageFailed'
+  | 'keepalive'
+  | 'pong'
 
 export interface RunEvent {
-  type: RunEventType
-  run_id: string
-  stage_id?: string
-  data: Record<string, unknown>
-  ts: number
+  event?: StageEventName
+  type?: StageEventName     // forward-compat
+  run_id?: string
+  adapter?: string
+  partial_text?: string
+  partial_index?: number
+  text?: string
+  latency_ms?: number
+  cost_usd?: number
+  result?: Record<string, unknown>
+  error?: string
+  is_streaming?: boolean
+  timestamp?: string
 }
 
 // ---------------------------------------------------------------------------
