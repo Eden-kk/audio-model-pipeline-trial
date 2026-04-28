@@ -85,10 +85,10 @@ export default function MicRecorder({ onBlob, disabled = false }: Props) {
         disabled={disabled}
         onClick={recording ? stopRecording : startRecording}
         className={cx(
-          'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+          'btn-pill',
           recording
             ? 'bg-red-600 hover:bg-red-700 text-white'
-            : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 disabled:cursor-not-allowed',
+            : 'btn-pill-dark',
         )}
       >
         {/* mic/stop icon */}
@@ -105,7 +105,7 @@ export default function MicRecorder({ onBlob, disabled = false }: Props) {
         )}
         {label}
       </button>
-      {error && <p className="text-red-400 text-xs">{error}</p>}
+      {error && <p className="text-red-600 text-xs">{error}</p>}
     </div>
   )
 }

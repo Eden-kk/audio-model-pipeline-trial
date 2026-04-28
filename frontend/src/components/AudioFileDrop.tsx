@@ -76,22 +76,22 @@ export default function AudioFileDrop({ onBlob, disabled = false }: Props) {
       onClick={() => !disabled && inputRef.current?.click()}
       className={cx(
         'flex flex-col items-center justify-center gap-2 w-full border-2 border-dashed rounded-xl p-6 cursor-pointer transition-colors select-none',
-        dragging ? 'border-indigo-400 bg-indigo-950/30' : 'border-gray-700 hover:border-gray-500',
+        dragging ? 'border-gray-900 bg-gray-100' : 'border-gray-300 hover:border-gray-400 bg-gray-50',
         disabled && 'opacity-50 cursor-not-allowed',
       )}
     >
-      <svg className="w-8 h-8 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <svg className="w-8 h-8 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
         <polyline points="17 8 12 3 7 8" />
         <line x1="12" x2="12" y1="3" y2="15" />
       </svg>
       {fileName ? (
-        <span className="text-sm text-indigo-300">{fileName}</span>
+        <span className="text-sm font-medium text-gray-900">{fileName}</span>
       ) : (
-        <span className="text-sm text-gray-400">Drag & drop an audio or video file, or click to browse</span>
+        <span className="text-sm text-gray-600">Drag & drop an audio or video file, or click to browse</span>
       )}
-      <span className="text-xs text-gray-600">Audio: WAV · MP3 · OGG · FLAC · M4A — Video: MP4 · MOV · WebM · MKV (audio track auto-extracted)</span>
-      {error && <p className="text-red-400 text-xs">{error}</p>}
+      <span className="text-xs text-gray-500 text-center">Audio: WAV · MP3 · OGG · FLAC · M4A — Video: MP4 · MOV · WebM · MKV (audio track auto-extracted)</span>
+      {error && <p className="text-red-600 text-xs">{error}</p>}
       <input
         ref={inputRef}
         type="file"

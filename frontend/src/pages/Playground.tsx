@@ -26,13 +26,16 @@ interface StageResult {
 type RunState = 'idle' | 'uploading' | 'running' | 'done' | 'error'
 
 // ---------------------------------------------------------------------------
-// Latency badge
+// Latency badge — light, pill-shaped, color tracks performance
 // ---------------------------------------------------------------------------
 
 function LatencyBadge({ ms }: { ms: number }) {
-  const color = ms < 500 ? 'bg-green-700' : ms < 2000 ? 'bg-yellow-700' : 'bg-red-700'
+  const color =
+    ms < 500 ? 'bg-green-100 text-green-800 border-green-200'
+    : ms < 2000 ? 'bg-amber-100 text-amber-800 border-amber-200'
+    : 'bg-red-100 text-red-800 border-red-200'
   return (
-    <span className={cx('inline-flex items-center px-2 py-0.5 rounded text-xs font-mono text-white', color)}>
+    <span className={cx('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-mono border', color)}>
       {ms.toFixed(0)} ms
     </span>
   )
@@ -139,7 +142,6 @@ export default function Playground() {
         }
       },
       () => {
-        // ws closed without run.finished — treat as done if we got results
         if (collected.length > 0) {
           setRunState('done')
           setStatusMsg('Done')
@@ -156,28 +158,30 @@ export default function Playground() {
   const hasAudio = pendingBlob !== null
   const canRun = hasAudio && !!selectedAdapter && !busy
 
-  // Primary transcript: first result with a transcript field
   const primaryResult = results.find((r) => r.transcript)
+  const selectedMeta = adapters.find((a) => a.id === selectedAdapter)
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-gray-50">
       {/* Header */}
-      <div className="border-b border-gray-800 px-6 py-4">
-        <h1 className="text-xl font-semibold text-gray-100">Playground</h1>
-        <p className="text-sm text-gray-400 mt-0.5">Quick-test a single ASR model against a mic recording or uploaded file.</p>
+      <div className="border-b border-gray-200 bg-white px-6 py-4">
+        <h1 className="text-xl font-semibold text-gray-900">Playground</h1>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Quick-test a single ASR model against a mic recording or uploaded file (audio or video).
+        </p>
       </div>
 
       <div className="flex-1 overflow-auto p-6 flex flex-col gap-6">
         {/* ── Top section: config + input ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Adapter picker */}
-          <div className="bg-gray-900 rounded-xl p-5 border border-gray-800 flex flex-col gap-4">
-            <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Adapter</h2>
+          <div className="card flex flex-col gap-4">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Adapter</h2>
 
             {adaptersError ? (
-              <div className="text-sm text-yellow-400 bg-yellow-950/40 border border-yellow-800 rounded-lg px-3 py-2">
+              <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                 No backend connected — adapter list unavailable.
-                <span className="block text-xs text-yellow-600 mt-1">{adaptersError}</span>
+                <span className="block text-xs text-amber-700 mt-1">{adaptersError}</span>
               </div>
             ) : adapters.length === 0 ? (
               <div className="text-sm text-gray-500 italic">Loading adapters…</div>
@@ -186,17 +190,30 @@ export default function Playground() {
                 value={selectedAdapter}
                 onChange={(e) => setSelectedAdapter(e.target.value)}
                 disabled={busy}
-                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                className="field w-full"
               >
                 {adapters.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.display_name} ({a.vendor})
+                    {a.display_name} — {a.vendor}
                   </option>
                 ))}
               </select>
             )}
 
-            {/* Manually enter adapter ID if no backend */}
+            {selectedMeta && (
+              <div className="flex flex-wrap gap-1.5 text-xs">
+                <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
+                  {selectedMeta.category}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
+                  {selectedMeta.hosting}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200 font-mono">
+                  {selectedMeta.id}
+                </span>
+              </div>
+            )}
+
             {adaptersError && (
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-gray-500">Or enter adapter ID manually</label>
@@ -206,17 +223,16 @@ export default function Playground() {
                   onChange={(e) => setSelectedAdapter(e.target.value)}
                   disabled={busy}
                   placeholder="e.g. deepgram"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                  className="field w-full"
                 />
               </div>
             )}
           </div>
 
           {/* Audio input */}
-          <div className="bg-gray-900 rounded-xl p-5 border border-gray-800 flex flex-col gap-4">
-            <h2 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Audio Input</h2>
+          <div className="card flex flex-col gap-4">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Audio Input</h2>
 
-            {/* Mode toggle */}
             <div className="flex gap-2">
               {(['upload', 'record'] as const).map((mode) => (
                 <button
@@ -225,10 +241,8 @@ export default function Playground() {
                   disabled={busy}
                   onClick={() => setInputMode(mode)}
                   className={cx(
-                    'px-3 py-1.5 rounded-lg text-xs font-medium transition-colors',
-                    inputMode === mode
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-gray-800 text-gray-400 hover:text-gray-200',
+                    inputMode === mode ? 'btn-pill-dark' : 'btn-pill-outline',
+                    'text-xs',
                     busy && 'opacity-50 cursor-not-allowed',
                   )}
                 >
@@ -244,7 +258,7 @@ export default function Playground() {
             )}
 
             {hasAudio && (
-              <p className="text-xs text-green-400">
+              <p className="text-xs text-green-700">
                 Audio ready — {(pendingBlob!.blob.size / 1024).toFixed(1)} KB ({pendingBlob!.mime})
               </p>
             )}
@@ -257,12 +271,12 @@ export default function Playground() {
             type="button"
             disabled={!canRun}
             onClick={() => void handleRun()}
-            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-colors"
+            className="btn-pill-dark px-6 py-2.5"
           >
             {busy ? statusMsg : 'Run'}
           </button>
           {busy && (
-            <div className="flex items-center gap-2 text-sm text-gray-400">
+            <div className="flex items-center gap-2 text-sm text-gray-600">
               <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                 <path d="M21 12a9 9 0 1 1-6.219-8.56" />
               </svg>
@@ -273,15 +287,15 @@ export default function Playground() {
 
         {/* ── Results section ── */}
         {runError && (
-          <div className="bg-red-950/40 border border-red-800 rounded-xl px-4 py-3 text-sm text-red-300">
+          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
             {runError}
           </div>
         )}
 
         {(results.length > 0 || runState === 'done') && (
-          <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-            <div className="px-5 py-3 border-b border-gray-800 flex items-center gap-3">
-              <span className="text-sm font-semibold text-gray-300">Transcript</span>
+          <div className="card overflow-hidden p-0">
+            <div className="px-5 py-3 border-b border-gray-200 flex items-center gap-3 bg-gray-50">
+              <span className="text-sm font-semibold text-gray-700">Transcript</span>
               {primaryResult?.latency_ms != null && (
                 <LatencyBadge ms={primaryResult.latency_ms} />
               )}
@@ -289,7 +303,7 @@ export default function Playground() {
 
             <div className="px-5 py-4">
               {primaryResult?.transcript ? (
-                <p className="text-gray-100 leading-relaxed whitespace-pre-wrap">{primaryResult.transcript}</p>
+                <p className="text-gray-900 leading-relaxed whitespace-pre-wrap">{primaryResult.transcript}</p>
               ) : (
                 <p className="text-gray-500 italic text-sm">
                   {runState === 'done' ? 'No transcript returned.' : 'Waiting for transcript…'}
@@ -297,9 +311,8 @@ export default function Playground() {
               )}
             </div>
 
-            {/* Per-stage results */}
             {results.length > 1 && (
-              <div className="px-5 pb-4 flex flex-col gap-2">
+              <div className="px-5 pb-4 flex flex-col gap-2 border-t border-gray-100 pt-3">
                 {results.map((r, i) => (
                   <div key={i} className="flex items-center gap-2 text-xs text-gray-500">
                     <span className="font-mono">{r.stage_id ?? `stage_${i}`}</span>
@@ -309,12 +322,11 @@ export default function Playground() {
               </div>
             )}
 
-            {/* Raw response collapsed */}
             {primaryResult?.raw_response != null && (
-              <div className="px-5 pb-4 border-t border-gray-800 pt-3">
+              <div className="px-5 pb-4 border-t border-gray-100 pt-3">
                 <details>
-                  <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">Raw response</summary>
-                  <pre className="mt-2 text-xs text-gray-400 bg-gray-950 rounded-lg p-3 overflow-auto max-h-64">
+                  <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-800">Raw response</summary>
+                  <pre className="mt-2 text-xs text-gray-700 bg-gray-50 rounded-lg p-3 overflow-auto max-h-64 border border-gray-200">
                     {JSON.stringify(primaryResult.raw_response, null, 2)}
                   </pre>
                 </details>
@@ -323,17 +335,16 @@ export default function Playground() {
           </div>
         )}
 
-        {/* Event log (collapsed by default) */}
         {events.length > 0 && (
           <details className="text-xs">
-            <summary className="text-gray-600 cursor-pointer hover:text-gray-400 select-none">
+            <summary className="text-gray-500 cursor-pointer hover:text-gray-800 select-none">
               WebSocket events ({events.length})
             </summary>
-            <div className="mt-2 bg-gray-950 rounded-lg p-3 overflow-auto max-h-48 space-y-1">
+            <div className="mt-2 bg-white border border-gray-200 rounded-lg p-3 overflow-auto max-h-48 space-y-1">
               {events.map((ev, i) => (
-                <div key={i} className="font-mono text-gray-500">
-                  <span className="text-indigo-400">{ev.type}</span>
-                  {ev.stage_id && <span className="text-gray-600 ml-1">({ev.stage_id})</span>}
+                <div key={i} className="font-mono text-gray-700">
+                  <span className="text-gray-900 font-semibold">{ev.type}</span>
+                  {ev.stage_id && <span className="text-gray-500 ml-1">({ev.stage_id})</span>}
                 </div>
               ))}
             </div>

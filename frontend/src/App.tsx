@@ -9,7 +9,7 @@ import Settings from './pages/Settings'
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="flex h-screen bg-gray-950 text-gray-100">
+      <div className="flex h-screen bg-gray-50 text-gray-900">
         <Sidebar />
         <main className="flex-1 overflow-auto">
           <Routes>
