@@ -171,6 +171,51 @@ export async function deleteClip(clipId: string): Promise<void> {
   if (!res.ok) throw new Error(`Delete ${res.status}`)
 }
 
+// ─── Auto-tagger ──────────────────────────────────────────────────────────
+
+export interface AutoTagOptions {
+  use_lid?: boolean
+  use_speaker_spread?: boolean
+  /** If true, replace existing scenarios entirely; otherwise union with
+   *  what the user already set. Default false (union — never clobber). */
+  replace?: boolean
+}
+
+export interface AutoTagResult {
+  clip_id: string
+  detected: string[]
+  final_scenarios: string[]
+  features: Record<string, unknown>
+  evidence: Record<string, string>
+}
+
+export interface AutoTagAllResult {
+  total: number
+  succeeded: number
+  failed: number
+  results: AutoTagResult[]
+  errors: Record<string, string>
+}
+
+/** POST /api/clips/{id}/autotag — heuristic scenario detection for one clip. */
+export async function autotagClip(
+  clipId: string,
+  opts: AutoTagOptions = {},
+): Promise<AutoTagResult> {
+  return apiFetch<AutoTagResult>(`/api/clips/${clipId}/autotag`, {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
+}
+
+/** POST /api/clips/autotag-all — run the auto-tagger over the entire corpus. */
+export async function autotagAllClips(opts: AutoTagOptions = {}): Promise<AutoTagAllResult> {
+  return apiFetch<AutoTagAllResult>('/api/clips/autotag-all', {
+    method: 'POST',
+    body: JSON.stringify(opts),
+  })
+}
+
 /** Upload a raw audio Blob. Returns the created Clip. */
 export async function uploadClip(blob: Blob, mime: string): Promise<Clip> {
   const form = new FormData()

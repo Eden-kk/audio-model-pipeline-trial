@@ -29,20 +29,229 @@ function CategoryPill({ category }: { category: string }) {
   )
 }
 
-function StageChain({ stages }: { stages: Recipe['stages'] }) {
+// Color of the SVG arrow stroke per upstream category (so an `audio_path`
+// edge from an ASR stage looks different from a `speaker_segments` edge).
+// Falls back to gray if the category isn't in the table.
+const EDGE_STROKE: Record<string, string> = {
+  asr: '#3b82f6',            // blue-500
+  tts: '#a855f7',            // purple-500
+  speaker_verify: '#f59e0b', // amber-500
+  lid: '#06b6d4',            // cyan-500
+  intent_llm: '#ec4899',     // pink-500
+  vad: '#10b981',            // green-500
+  diarization: '#6366f1',    // indigo-500
+  realtime_omni: '#d946ef',  // fuchsia-500
+  dispatch: '#10b981',       // emerald-500
+}
+
+/** Topological-wave layout for a recipe DAG.
+ *
+ * Stages with no incoming edge from each other land in the same wave
+ * (column); waves chain left-to-right exactly as the runner executes them.
+ * For slow-loop this gives `[asr | speaker_tag] → intent → dispatch` —
+ * which mirrors the parallel execution the backend now does. */
+function layoutWaves(stages: Recipe['stages'], edges: Recipe['edges']) {
+  const ids = new Set(stages.map((s) => s.id))
+  const deps: Record<string, Set<string>> = {}
+  for (const s of stages) deps[s.id] = new Set()
+  for (const e of edges) if (ids.has(e.to) && ids.has(e.from)) deps[e.to].add(e.from)
+
+  const placed = new Set<string>()
+  const waves: Recipe['stages'][] = []
+  while (placed.size < stages.length) {
+    const wave = stages.filter(
+      (s) => !placed.has(s.id) && [...deps[s.id]].every((d) => placed.has(d)),
+    )
+    const next = wave.length > 0 ? wave : stages.filter((s) => !placed.has(s.id)).slice(0, 1)
+    waves.push(next)
+    for (const s of next) placed.add(s.id)
+  }
+  return waves
+}
+
+/** Compact SVG flow diagram: wave-laid-out category pills + per-edge
+ *  arrows with port labels at the midpoint. The whole diagram is one SVG
+ *  so arrows can route through the gaps between rows without colliding
+ *  with the foreground HTML. */
+function RecipeDag({ stages, edges }: { stages: Recipe['stages']; edges: Recipe['edges'] }) {
+  const waves = layoutWaves(stages, edges)
+
+  // Fixed geometry — easy to tweak. The diagram's bounding box scales with
+  // the number of waves (cols) and the tallest wave (rows).
+  const COL_W = 150        // horizontal pitch between waves
+  const ROW_H = 56         // vertical pitch within a wave
+  const PILL_W = 116       // pill bounding box for arrow endpoints
+  const PILL_H = 30
+  const PAD_X = 8
+  const PAD_Y = 8
+
+  // Record each stage's center coordinate so we can wire SVG arrows between
+  // them. Arrow tail = right edge of source pill; arrow head = left edge of
+  // target pill — gives a clean "data flows out the right, in the left".
+  const pos: Record<string, { cx: number; cy: number; col: number; row: number }> = {}
+  waves.forEach((wave, col) => wave.forEach((s, row) => {
+    pos[s.id] = {
+      cx: PAD_X + col * COL_W + PILL_W / 2,
+      cy: PAD_Y + row * ROW_H + PILL_H / 2,
+      col,
+      row,
+    }
+  }))
+  const stageById = Object.fromEntries(stages.map((s) => [s.id, s]))
+
+  const tallest = Math.max(...waves.map((w) => w.length))
+  const width = PAD_X * 2 + waves.length * COL_W - (COL_W - PILL_W)
+  const height = PAD_Y * 2 + tallest * ROW_H - (ROW_H - PILL_H)
+
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      {stages.map((s, i) => (
-        <div key={s.id} className="flex items-center gap-2">
-          <CategoryPill category={s.category} />
-          {i < stages.length - 1 && (
-            <svg className="w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" strokeWidth={2}>
-              <path d="M5 12h14M13 5l7 7-7 7" />
-            </svg>
-          )}
-        </div>
-      ))}
+    <div className="relative" style={{ width, height }}>
+      {/* SVG layer: arrows + port labels behind the pills */}
+      <svg
+        width={width}
+        height={height}
+        className="absolute inset-0 pointer-events-none"
+        // Distinct arrowhead per category — cheaper than redefining per-arrow.
+        // We register one marker per category we actually use.
+      >
+        <defs>
+          {Object.entries(EDGE_STROKE).map(([cat, color]) => (
+            <marker
+              key={cat}
+              id={`arrow-${cat}`}
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="6"
+              markerHeight="6"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={color} />
+            </marker>
+          ))}
+          <marker
+            id="arrow-default"
+            viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af" />
+          </marker>
+        </defs>
+
+        {edges.map((e, i) => {
+          const a = pos[e.from]
+          const b = pos[e.to]
+          if (!a || !b) return null
+          const upstream = stageById[e.from]
+          const stroke = (upstream && EDGE_STROKE[upstream.category]) || '#9ca3af'
+          const markerId = (upstream && EDGE_STROKE[upstream.category]) ? `arrow-${upstream.category}` : 'arrow-default'
+
+          // Tail/head sit on the pill's right/left edges so the arrow doesn't
+          // visually overlap the rounded-rect text.
+          const x1 = a.cx + PILL_W / 2
+          const y1 = a.cy
+          const x2 = b.cx - PILL_W / 2
+          const y2 = b.cy
+
+          // Cubic bezier with horizontal control handles — gives a smooth
+          // curve when source/target are on different rows, and degrades to
+          // a straight line when same-row.
+          const dx = Math.max(20, (x2 - x1) / 2)
+          const path = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`
+
+          // Label position — midpoint of the chord, nudged above the curve.
+          const lx = (x1 + x2) / 2
+          const ly = (y1 + y2) / 2 - 6
+
+          return (
+            <g key={i}>
+              <path
+                d={path}
+                stroke={stroke}
+                strokeWidth={1.5}
+                fill="none"
+                markerEnd={`url(#${markerId})`}
+                opacity={0.85}
+              />
+              {e.port && (
+                <g>
+                  {/* Pill background so the label is readable when crossing other arrows */}
+                  <rect
+                    x={lx - e.port.length * 3.2 - 4}
+                    y={ly - 9}
+                    width={e.port.length * 6.4 + 8}
+                    height={13}
+                    rx={3}
+                    fill="#f9fafb"
+                    stroke="#e5e7eb"
+                    strokeWidth={0.5}
+                  />
+                  <text
+                    x={lx}
+                    y={ly}
+                    textAnchor="middle"
+                    fontSize="10"
+                    fontFamily="ui-monospace, monospace"
+                    fill="#4b5563"
+                  >
+                    {e.port}
+                  </text>
+                </g>
+              )}
+            </g>
+          )
+        })}
+      </svg>
+
+      {/* HTML layer: category pills positioned absolutely over the SVG */}
+      {stages.map((s) => {
+        const p = pos[s.id]
+        if (!p) return null
+        return (
+          <div
+            key={s.id}
+            className="absolute flex items-center justify-center"
+            style={{
+              left: p.cx - PILL_W / 2,
+              top: p.cy - PILL_H / 2,
+              width: PILL_W,
+              height: PILL_H,
+            }}
+            title={`${s.id} · ${s.category}`}
+          >
+            <CategoryPill category={s.category} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function StageChain({ stages, edges }: { stages: Recipe['stages']; edges: Recipe['edges'] }) {
+  // Single-stage recipes (asr-only / tts-only / speaker-verify-only) have
+  // no edges to render — just show the lone pill so the diagram doesn't
+  // collapse to an empty box.
+  if (stages.length <= 1 || edges.length === 0) {
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        {stages.map((s, i) => (
+          <div key={s.id} className="flex items-center gap-2">
+            <CategoryPill category={s.category} />
+            {i < stages.length - 1 && (
+              <svg className="w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" strokeWidth={2}>
+                <path d="M5 12h14M13 5l7 7-7 7" />
+              </svg>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+  // Multi-stage with real edges → draw the wave-laid-out flow diagram with
+  // SVG arrows + port labels.
+  return (
+    <div className="overflow-x-auto">
+      <RecipeDag stages={stages} edges={edges} />
     </div>
   )
 }
@@ -102,8 +311,8 @@ export default function Pipelines() {
               <p className="text-sm text-gray-600 leading-relaxed">{r.description}</p>
 
               <div className="pt-2 border-t border-gray-100">
-                <p className="text-xs text-gray-500 mb-2">Stage chain</p>
-                <StageChain stages={r.stages} />
+                <p className="text-xs text-gray-500 mb-2">Data flow</p>
+                <StageChain stages={r.stages} edges={r.edges} />
               </div>
 
               <div className="flex items-center gap-2 pt-3">

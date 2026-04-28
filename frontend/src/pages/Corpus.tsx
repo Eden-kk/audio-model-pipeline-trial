@@ -5,7 +5,10 @@ import {
   updateClipTags,
   deleteClip,
   clipAudioUrl,
+  autotagClip,
+  autotagAllClips,
   type Clip,
+  type AutoTagResult,
 } from '../lib/api'
 import { cx } from '../lib/cx'
 
@@ -73,6 +76,11 @@ export default function Corpus() {
   const [filterModality, setFilterModality] = useState<'all' | 'audio' | 'video'>('all')
   const [search, setSearch] = useState('')
   const [busyClipId, setBusyClipId] = useState<string | null>(null)
+  // Auto-tagger UX: per-clip evidence for tooltips, and a global "running"
+  // flag while the batch button is in flight so the user gets a progress hint.
+  const [autoEvidence, setAutoEvidence] = useState<Record<string, AutoTagResult>>({})
+  const [autoRunning, setAutoRunning] = useState<'none' | 'all' | 'one'>('none')
+  const [autoProgress, setAutoProgress] = useState<string>('')
 
   function refresh() {
     setLoading(true)
@@ -131,6 +139,54 @@ export default function Corpus() {
     }
   }
 
+  async function handleAutoTagOne(clip: Clip, replace = false) {
+    setBusyClipId(clip.id); setAutoRunning('one')
+    try {
+      const res = await autotagClip(clip.id, { replace })
+      setAutoEvidence((prev) => ({ ...prev, [clip.id]: res }))
+      setClips((cs) => cs.map((c) => (
+        c.id === clip.id ? { ...c, scenarios: res.final_scenarios } : c
+      )))
+    } catch (e: unknown) {
+      console.error(e)
+      alert(`Auto-tag failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusyClipId(null); setAutoRunning('none')
+    }
+  }
+
+  async function handleAutoTagAll(replace = false) {
+    if (clips.length === 0) return
+    const confirmMsg = replace
+      ? `Replace scenarios on all ${clips.length} clips with auto-detected tags? Existing manual tags will be lost.`
+      : `Add auto-detected scenarios to all ${clips.length} clips? Existing tags are preserved.`
+    if (!confirm(confirmMsg)) return
+    setAutoRunning('all')
+    setAutoProgress(`Processing ${clips.length} clips…`)
+    try {
+      const res = await autotagAllClips({ replace })
+      const evMap: Record<string, AutoTagResult> = {}
+      for (const r of res.results) evMap[r.clip_id] = r
+      setAutoEvidence((prev) => ({ ...prev, ...evMap }))
+      // Patch local clip state with new scenarios in one pass.
+      setClips((cs) => cs.map((c) => {
+        const r = evMap[c.id]
+        return r ? { ...c, scenarios: r.final_scenarios } : c
+      }))
+      setAutoProgress(
+        `Auto-tagged ${res.succeeded}/${res.total} clip${res.total === 1 ? '' : 's'}`
+        + (res.failed > 0 ? ` · ${res.failed} failed` : ''),
+      )
+    } catch (e: unknown) {
+      console.error(e)
+      setAutoProgress(`Auto-tag-all failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setAutoRunning('none')
+      // Clear the toast after a few seconds so it doesn't linger.
+      window.setTimeout(() => setAutoProgress(''), 6000)
+    }
+  }
+
   async function handleDelete(clip: Clip) {
     if (!confirm(`Delete clip "${clip.original_filename}"?`)) return
     setBusyClipId(clip.id)
@@ -151,13 +207,37 @@ export default function Corpus() {
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Corpus</h1>
           <p className="text-sm text-gray-500 mt-0.5">
-            Stored clips from upload + recording. Tag scenarios for the AR-glass
-            corpus you're growing — every adapter run lands here automatically.
+            Stored clips from upload + recording. Click <span className="font-mono text-xs bg-gray-100 px-1 rounded">Auto-tag all</span> to
+            run heuristic scenario detection (SNR, spectrum, sample-rate,
+            optional Whisper-LID + speaker-spread) over every clip.
           </p>
         </div>
-        <button onClick={refresh} className="btn-pill-outline text-xs">
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {autoProgress && (
+            <span className="text-xs text-gray-600 font-mono mr-2">{autoProgress}</span>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleAutoTagAll(false)}
+            disabled={autoRunning !== 'none' || clips.length === 0}
+            className="btn-pill-dark text-xs"
+            title="Detect scenarios for all clips and merge with existing tags"
+          >
+            {autoRunning === 'all' ? '⟳ Auto-tagging…' : '✨ Auto-tag all'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleAutoTagAll(true)}
+            disabled={autoRunning !== 'none' || clips.length === 0}
+            className="btn-pill-outline text-xs"
+            title="Replace existing scenarios with auto-detected ones"
+          >
+            replace mode
+          </button>
+          <button onClick={refresh} className="btn-pill-outline text-xs">
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -270,20 +350,63 @@ export default function Corpus() {
                 <div className="font-mono text-gray-900">{fmtTimestamp(c.created_at)}</div>
               </div>
 
-              {/* Scenario chips (clickable to toggle) */}
+              {/* Scenario chips (clickable to toggle, ✨ auto-detect button) */}
               <div className="border-t border-gray-100 pt-3">
-                <p className="text-xs text-gray-500 mb-2">Scenarios (click to toggle)</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {SCENARIO_PALETTE.map((s) => (
-                    <ChipToggle
-                      key={s}
-                      label={s}
-                      active={c.scenarios.includes(s)}
-                      onClick={() => void toggleClipScenario(c, s)}
-                      disabled={busyClipId === c.id}
-                    />
-                  ))}
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-gray-500">
+                    Scenarios
+                    {autoEvidence[c.id] && (
+                      <span
+                        className="ml-2 text-[10px] text-gray-400"
+                        title={Object.entries(autoEvidence[c.id].evidence)
+                          .map(([k, v]) => `${k}: ${v}`)
+                          .join('\n') || 'no evidence'}
+                      >
+                        (auto-detected · hover for evidence)
+                      </span>
+                    )}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void handleAutoTagOne(c, false)}
+                    disabled={busyClipId === c.id || autoRunning === 'all'}
+                    className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 disabled:opacity-50"
+                    title="Run heuristic auto-tagger on this clip and merge with existing tags"
+                  >
+                    {busyClipId === c.id && autoRunning === 'one' ? '⟳' : '✨ auto-detect'}
+                  </button>
                 </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {SCENARIO_PALETTE.map((s) => {
+                    const wasAutoDetected = autoEvidence[c.id]?.detected.includes(s)
+                    return (
+                      <span key={s} className="relative">
+                        <ChipToggle
+                          label={s}
+                          active={c.scenarios.includes(s)}
+                          onClick={() => void toggleClipScenario(c, s)}
+                          disabled={busyClipId === c.id}
+                        />
+                        {wasAutoDetected && (
+                          <span
+                            className="absolute -top-1 -right-1 w-2 h-2 bg-amber-400 rounded-full ring-1 ring-white"
+                            title="Auto-detected"
+                          />
+                        )}
+                      </span>
+                    )
+                  })}
+                </div>
+                {autoEvidence[c.id] && (
+                  <details className="mt-2">
+                    <summary className="text-[10px] text-gray-400 cursor-pointer">
+                      acoustic features
+                    </summary>
+                    <pre className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded p-1.5 mt-1 overflow-x-auto">
+{JSON.stringify(autoEvidence[c.id].features, null, 2)}
+                    </pre>
+                  </details>
+                )}
               </div>
 
               {/* Actions */}
@@ -292,13 +415,13 @@ export default function Corpus() {
                   to={`/playground?clip=${c.id}`}
                   className="btn-pill-dark text-xs"
                 >
-                  → Run in Playground
+                  Run in Playground
                 </Link>
                 <Link
                   to={`/run?clip=${c.id}`}
                   className="btn-pill-outline text-xs"
                 >
-                  → Pipeline
+                  Pipeline
                 </Link>
                 <button
                   type="button"

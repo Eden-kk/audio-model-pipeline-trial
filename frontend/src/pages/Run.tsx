@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import ReactFlow, {
-  Background, Controls, MarkerType, Position,
+  Background, Controls, Handle, MarkerType, Position,
   type Edge, type Node, type NodeProps,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import {
-  listRecipes, listAdapters, listClips, startRecipeRun,
+  listRecipes, listAdapters, listClips, listEnrollments, startRecipeRun,
   clipAudioUrl,
-  type Recipe, type Adapter, type Clip, type RecipeRun, type StageRun,
+  type Recipe, type Adapter, type Clip, type Enrollment, type RecipeRun, type StageRun,
 } from '../lib/api'
 import { cx } from '../lib/cx'
 import SegmentTimeline, { type Segment } from '../components/SegmentTimeline'
@@ -23,6 +23,21 @@ const CATEGORY_BADGE: Record<string, string> = {
   realtime_omni: 'bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200',
   lid: 'bg-cyan-100 text-cyan-800 border-cyan-200',
   dispatch: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+}
+
+// Edge stroke color per upstream stage's category — kept in sync with the
+// pill palette in Pipelines.tsx so an `asr → intent` arrow on Run looks the
+// same blue as it does in the recipe gallery.
+const EDGE_STROKE: Record<string, string> = {
+  asr: '#3b82f6',
+  tts: '#a855f7',
+  speaker_verify: '#f59e0b',
+  lid: '#06b6d4',
+  intent_llm: '#ec4899',
+  vad: '#10b981',
+  diarization: '#6366f1',
+  realtime_omni: '#d946ef',
+  dispatch: '#10b981',
 }
 
 type StageState = 'idle' | 'running' | 'done' | 'error'
@@ -54,9 +69,24 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
 
   return (
     <div className={cx(
-      'bg-white rounded-xl border border-gray-200 px-4 py-3 w-[260px] shadow-sm ring-2 ring-offset-1',
+      'bg-white rounded-xl border border-gray-200 px-4 py-3 w-[260px] shadow-sm ring-2 ring-offset-1 relative',
       ringColor,
     )}>
+      {/* Handles are the anchor points react-flow uses to draw edges. We
+          register both a target (left) and a source (right) on every node;
+          stages with no incoming/outgoing edge in the recipe just leave
+          their unused handle un-referenced. Without these, react-flow
+          silently drops every edge. */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ background: '#9ca3af', width: 8, height: 8, border: '2px solid white' }}
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ background: '#9ca3af', width: 8, height: 8, border: '2px solid white' }}
+      />
       <div className="flex items-center justify-between gap-2 mb-2">
         <span className="font-mono text-xs text-gray-500">{stageId}</span>
         <span className={cx(
@@ -116,6 +146,7 @@ export default function Run() {
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [clips, setClips] = useState<Clip[]>([])
   const [adapters, setAdapters] = useState<Adapter[]>([])
+  const [enrollments, setEnrollments] = useState<Enrollment[]>([])
   const [recipeId, setRecipeId] = useState<string>(recipeIdParam ?? '')
   const [clipId, setClipId] = useState<string>(clipIdParam ?? '')
   const [stageAdapters, setStageAdapters] = useState<Record<string, string>>({})
@@ -159,35 +190,89 @@ export default function Run() {
   // Build react-flow nodes + edges from the current recipe + state
   const { nodes, edges } = useMemo(() => {
     if (!recipe) return { nodes: [] as Node[], edges: [] as Edge[] }
-    const nodes: Node[] = recipe.stages.map((s, i) => ({
-      id: s.id,
-      type: 'stage',
-      position: { x: 80 + i * 320, y: 80 },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
-      data: {
-        stageId: s.id,
-        category: s.category,
-        adapterId: stageAdapters[s.id] ?? null,
-        state: stageStates[s.id] ?? 'idle',
-        latencyMs: stageResults[s.id]?.latency_ms,
-        outputPreview: stageResults[s.id]?.output_preview,
-        error: stageResults[s.id]?.error ?? undefined,
-        adapterChoices: adapters,
-        onAdapterChange: (adapterId: string) =>
-          setStageAdapters((prev) => ({ ...prev, [s.id]: adapterId })),
-      } satisfies StageNodeData,
-    }))
-    const edges: Edge[] = recipe.edges.map((e, i) => ({
-      id: `e${i}`,
-      source: e.from,
-      target: e.to,
-      label: e.port,
-      labelStyle: { fontSize: 10, fill: '#6b7280' },
-      labelBgStyle: { fill: '#f9fafb' },
-      style: { stroke: '#9ca3af', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#9ca3af' },
-    }))
+
+    // Topological-wave layout: stages with no edge between them sit in the
+    // same wave (column), so e.g. slow-loop's `asr` and `speaker_tag` —
+    // which both read the clip and run concurrently in the backend — render
+    // stacked in one column rather than strung out left-to-right.
+    const deps: Record<string, Set<string>> = {}
+    for (const s of recipe.stages) deps[s.id] = new Set()
+    for (const e of recipe.edges) {
+      if (deps[e.to]) deps[e.to].add(e.from)
+    }
+    const placed = new Set<string>()
+    const waves: typeof recipe.stages[] = []
+    while (placed.size < recipe.stages.length) {
+      const wave = recipe.stages.filter(
+        (s) => !placed.has(s.id) && [...deps[s.id]].every((d) => placed.has(d)),
+      )
+      const next = wave.length > 0 ? wave : recipe.stages.filter((s) => !placed.has(s.id)).slice(0, 1)
+      waves.push(next)
+      for (const s of next) placed.add(s.id)
+    }
+    const wavePos: Record<string, { col: number; row: number }> = {}
+    waves.forEach((wave, col) => wave.forEach((s, row) => { wavePos[s.id] = { col, row } }))
+
+    // Column pitch must leave enough horizontal slack for edge labels to
+    // sit between two 260-px-wide nodes without overlapping either. With a
+    // 260 px node and ~140 px gap, "memory_doc" / "speaker_segments" /
+    // "language" all fit on a white pill in the middle of the arrow.
+    const COL_W = 400
+    const ROW_H = 200
+    const nodes: Node[] = recipe.stages.map((s) => {
+      const { col, row } = wavePos[s.id]
+      return {
+        id: s.id,
+        type: 'stage',
+        position: { x: 80 + col * COL_W, y: 80 + row * ROW_H },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        data: {
+          stageId: s.id,
+          category: s.category,
+          adapterId: stageAdapters[s.id] ?? null,
+          state: stageStates[s.id] ?? 'idle',
+          latencyMs: stageResults[s.id]?.latency_ms,
+          outputPreview: stageResults[s.id]?.output_preview,
+          error: stageResults[s.id]?.error ?? undefined,
+          adapterChoices: adapters,
+          onAdapterChange: (adapterId: string) =>
+            setStageAdapters((prev) => ({ ...prev, [s.id]: adapterId })),
+        } satisfies StageNodeData,
+      }
+    })
+    // Color the arrow by the upstream stage's category — so the audio→ASR
+    // hop looks distinct from speaker_segments→intent. Animate the arrow
+    // while the upstream stage is running so the user sees data "in flight".
+    const edges: Edge[] = recipe.edges.map((e, i) => {
+      const fromStage = recipe.stages.find((s) => s.id === e.from)
+      const cat = fromStage?.category ?? ''
+      const stroke = EDGE_STROKE[cat] ?? '#9ca3af'
+      const upstreamState = stageStates[e.from] ?? 'idle'
+      const downstreamState = stageStates[e.to] ?? 'idle'
+      // Live animation: arrow pulses while upstream is running OR downstream
+      // just started consuming. Stops once both are settled.
+      const animated = upstreamState === 'running'
+        || (upstreamState === 'done' && downstreamState === 'running')
+      return {
+        id: `e${i}`,
+        source: e.from,
+        target: e.to,
+        type: 'smoothstep',
+        animated,
+        label: e.port,
+        labelStyle: { fontSize: 11, fill: '#374151', fontFamily: 'ui-monospace, monospace' },
+        // Fully opaque background + thin border so the label always reads
+        // cleanly even if it lands close to a node's rounded corner. Larger
+        // padding gives a real "pill" look.
+        labelBgStyle: { fill: '#ffffff', fillOpacity: 1, stroke: '#e5e7eb', strokeWidth: 1 },
+        labelBgPadding: [8, 4] as [number, number],
+        labelBgBorderRadius: 6,
+        labelShowBg: true,
+        style: { stroke, strokeWidth: 2.25 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 18, height: 18 },
+      }
+    })
     return { nodes, edges }
   }, [recipe, adapters, stageAdapters, stageStates, stageResults])
 
@@ -330,9 +415,36 @@ export default function Run() {
         </div>
       )}
 
-      {/* Slow-loop drill-in: per-segment user-tag timeline + envelope JSON */}
+      {/* Slow-loop drill-in: ASR transcript + per-segment user-tag timeline + envelope JSON */}
       {runResult && runResult.stages.map((s) => {
         const result = s.result as Record<string, unknown> | null | undefined
+        // ASR stage — explicit, full transcript card so the user never has
+        // to expand a tooltip to see what was heard.
+        if (s.category === 'asr' && result && typeof (result as { text?: unknown }).text === 'string') {
+          const r = result as { text: string; words?: unknown[]; language?: string }
+          const wordCount = Array.isArray(r.words) ? r.words.length : 0
+          return (
+            <div key={`${s.stage_id}-asr`} className="mx-6 mb-3 card">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-xs text-gray-500 uppercase tracking-wider">
+                  Transcript · {s.stage_id} ({s.adapter})
+                </span>
+                <span className="text-xs text-gray-500 font-mono ml-auto flex items-center gap-3">
+                  {r.language && <span>lang={r.language}</span>}
+                  {wordCount > 0 && <span>{wordCount} words</span>}
+                  <span>{s.latency_ms?.toFixed(0)} ms</span>
+                </span>
+              </div>
+              {r.text.trim().length > 0 ? (
+                <p className="text-sm text-gray-900 whitespace-pre-wrap leading-relaxed">
+                  {r.text}
+                </p>
+              ) : (
+                <p className="text-sm text-gray-500 italic">(empty transcript)</p>
+              )}
+            </div>
+          )
+        }
         // speaker_tag stage with verify_segments() output
         if (s.category === 'speaker_verify' && result && Array.isArray((result as { segments?: unknown[] }).segments)) {
           const segs = (result as { segments: Segment[] }).segments
