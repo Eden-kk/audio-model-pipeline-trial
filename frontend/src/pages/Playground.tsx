@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import MicRecorder from '../components/MicRecorder'
 import MicStream from '../components/MicStream'
 import AudioFileDrop from '../components/AudioFileDrop'
 import {
   listAdapters,
+  listClips,
+  clipAudioUrl,
   uploadClip,
   startRun,
   connectRunWS,
   type Adapter,
+  type Clip,
   type RunEvent,
 } from '../lib/api'
 import { cx } from '../lib/cx'
@@ -51,10 +55,18 @@ function LatencyBadge({ ms }: { ms: number }) {
 // ---------------------------------------------------------------------------
 
 export default function Playground() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const preselectedClipId = searchParams.get('clip')
+
   const [adapters, setAdapters] = useState<Adapter[]>([])
   const [adaptersError, setAdaptersError] = useState<string | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<string>('')
   const [pendingBlob, setPendingBlob] = useState<{ blob: Blob; mime: string } | null>(null)
+  // When the user arrives via Corpus → "Run in Playground", we deep-link
+  // through `?clip=<id>` and run directly against the existing corpus row
+  // (no re-upload). The clip metadata is fetched once on mount.
+  const [preselectedClip, setPreselectedClip] = useState<Clip | null>(null)
+  const [preselectError, setPreselectError] = useState<string | null>(null)
   const [runState, setRunState] = useState<RunState>('idle')
   const [statusMsg, setStatusMsg] = useState<string>('')
   const [events, setEvents] = useState<RunEvent[]>([])
@@ -75,33 +87,96 @@ export default function Playground() {
       })
   }, [])
 
+  // Resolve `?clip=<id>` from the URL — fetched after mount so the clip
+  // panel renders with full metadata (filename, duration, scenarios)
+  // rather than a bare ID.
+  useEffect(() => {
+    if (!preselectedClipId) {
+      setPreselectedClip(null)
+      setPreselectError(null)
+      return
+    }
+    let cancelled = false
+    setPreselectError(null)
+    listClips()
+      .then((clips) => {
+        if (cancelled) return
+        const found = clips.find((c) => c.id === preselectedClipId)
+        if (!found) {
+          setPreselectError(
+            `Clip ${preselectedClipId.slice(0, 8)}… not found — was it deleted?`,
+          )
+          setPreselectedClip(null)
+          return
+        }
+        setPreselectedClip(found)
+        // Drop any pending blob so the picked clip is unambiguously "the input".
+        setPendingBlob(null)
+        // Force input-mode to upload so the audio preview area is visible
+        // (mic-stream mode hides everything below it).
+        setInputMode('upload')
+        setRunState('idle')
+        setResults([])
+        setRunError(null)
+        setEvents([])
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return
+        setPreselectError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [preselectedClipId])
+
   const handleBlob = useCallback((blob: Blob, mime: string) => {
     setPendingBlob({ blob, mime })
+    // A fresh blob takes precedence over the deep-linked clip — clear it
+    // so handleRun() doesn't misroute the run.
+    setPreselectedClip(null)
+    if (preselectedClipId) {
+      // Remove `?clip=` from the URL so a refresh doesn't restore the clip.
+      setSearchParams({}, { replace: true })
+    }
     setRunState('idle')
     setResults([])
     setRunError(null)
     setEvents([])
-  }, [])
+  }, [preselectedClipId, setSearchParams])
+
+  function clearPreselection() {
+    setPreselectedClip(null)
+    setSearchParams({}, { replace: true })
+  }
 
   async function handleRun() {
-    if (!pendingBlob) return
     if (!selectedAdapter) return
+    if (!pendingBlob && !preselectedClip) return
 
-    setRunState('uploading')
-    setStatusMsg('Uploading clip…')
     setResults([])
     setRunError(null)
     setEvents([])
 
-    let clip
-    try {
-      clip = await uploadClip(pendingBlob.blob, pendingBlob.mime)
+    // Two run paths:
+    //   1. Deep-linked corpus clip — skip upload, run directly by clip_id
+    //   2. Fresh blob from upload/record — upload first, then run
+    let clip: { id: string }
+    if (preselectedClip) {
+      clip = { id: preselectedClip.id }
+      setRunState('running')
       setStatusMsg('Starting run…')
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setRunError(`Upload failed: ${msg}`)
-      setRunState('error')
-      return
+    } else {
+      setRunState('uploading')
+      setStatusMsg('Uploading clip…')
+      try {
+        clip = await uploadClip(pendingBlob!.blob, pendingBlob!.mime)
+        setStatusMsg('Starting run…')
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setRunError(`Upload failed: ${msg}`)
+        setRunState('error')
+        return
+      }
     }
 
     setRunState('running')
@@ -205,7 +280,7 @@ export default function Playground() {
   }
 
   const busy = runState === 'uploading' || runState === 'running'
-  const hasAudio = pendingBlob !== null
+  const hasAudio = pendingBlob !== null || preselectedClip !== null
   const canRun = hasAudio && !!selectedAdapter && !busy
 
   const primaryResult = results.find((r) => r.transcript)
@@ -293,6 +368,64 @@ export default function Playground() {
           {/* Audio input */}
           <div className="card flex flex-col gap-4">
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Audio Input</h2>
+
+            {/* Deep-linked clip from Corpus → "Run in Playground". When set,
+                the run uses this clip directly (no re-upload). The tabs
+                below stay enabled so the user can swap to a fresh recording
+                if they want — that clears the preselection. */}
+            {preselectedClip && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 flex flex-col gap-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-blue-900 uppercase tracking-wider">
+                      Selected from Corpus
+                    </div>
+                    <div className="mt-1 text-sm text-gray-900 truncate">
+                      {preselectedClip.original_filename || preselectedClip.filename}
+                    </div>
+                    <div className="text-xs text-gray-600 mt-0.5">
+                      {preselectedClip.duration_s.toFixed(1)}s ·{' '}
+                      {preselectedClip.sample_rate} Hz ·{' '}
+                      {preselectedClip.channels} ch
+                      {preselectedClip.language_detected && (
+                        <> · {preselectedClip.language_detected}</>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearPreselection}
+                    disabled={busy}
+                    className="text-xs text-blue-700 hover:text-blue-900 underline disabled:opacity-50"
+                    title="Use a fresh upload/recording instead"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <audio
+                  controls
+                  src={clipAudioUrl(preselectedClip.id)}
+                  className="w-full h-9"
+                />
+                {preselectedClip.scenarios.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {preselectedClip.scenarios.slice(0, 6).map((s) => (
+                      <span
+                        key={s}
+                        className="px-1.5 py-0.5 rounded-full bg-white text-blue-800 text-[10px] border border-blue-200"
+                      >
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {preselectError && (
+              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                {preselectError}
+              </div>
+            )}
 
             <div className="flex gap-2 flex-wrap">
               {([
