@@ -1,15 +1,25 @@
 """Shared HTTP client for self-hosted NeMo ASR models.
 
-The audio-trial backend talks to a separate `model-server` container (Slice 1B)
-that runs on the AMD-ROCm remote machine and hosts Parakeet, Canary-1B-flash,
-Canary-Qwen-2.5B (and any other NeMo models added later) behind a unified
-HTTP API.  This helper handles the wire shape; the per-model adapters just
-declare their identity and call _transcribe_via_model_server(model="...").
+The audio-trial backend talks to a separate `model-server` that hosts
+Parakeet + Canary models behind a unified HTTP API. Two deploy targets
+ship today:
 
-Env: MODEL_SERVER_URL (default http://localhost:9100).
+  - Modal       (CUDA L4, default — `modal deploy model-server/modal_app.py`)
+  - AMD-ROCm    (`docker compose -f model-server/docker-compose.yml up -d`)
 
-Model-server contract (matches Slice 1B's model-server/server.py):
-  POST {MODEL_SERVER_URL}/v1/transcribe?model=<id>
+Both speak the same wire shape; only the URL changes. Adapters pick
+which target to hit via env (resolved by ``model_server_url()`` below):
+
+  MODEL_SERVER_BACKEND=modal|amd   declares which target to use.
+                                   Defaults to "modal".
+  MODEL_SERVER_MODAL_URL=https://… public Modal URL printed by deploy.
+  MODEL_SERVER_AMD_URL=http://…    AMD docker-compose host:port (default
+                                   http://localhost:9100).
+  MODEL_SERVER_URL=…               legacy single-knob; if set, beats both
+                                   of the above (handy in CI / one-offs).
+
+Wire contract (model-server/server.py for AMD, modal_app.py for Modal):
+  POST {url}/v1/transcribe?model=<id>
        multipart/form-data with `file` = audio bytes
   →   {text, words, language, duration_s, model, latency_ms}
 """
@@ -23,7 +33,24 @@ import httpx
 
 
 def model_server_url() -> str:
-    return os.environ.get("MODEL_SERVER_URL", "http://localhost:9100").rstrip("/")
+    """Resolve the model-server URL, honouring the legacy single-knob first."""
+    legacy = os.environ.get("MODEL_SERVER_URL")
+    if legacy:
+        return legacy.rstrip("/")
+    backend = os.environ.get("MODEL_SERVER_BACKEND", "modal").strip().lower()
+    if backend == "amd":
+        return os.environ.get("MODEL_SERVER_AMD_URL",
+                              "http://localhost:9100").rstrip("/")
+    if backend == "modal":
+        # Modal default of localhost:9100 is intentional — you HAVE to set
+        # MODEL_SERVER_MODAL_URL after `modal deploy` prints the public URL.
+        # The localhost fallback just lets a dev poke the API w/ a fake server.
+        return os.environ.get("MODEL_SERVER_MODAL_URL",
+                              "http://localhost:9100").rstrip("/")
+    raise RuntimeError(
+        f"MODEL_SERVER_BACKEND={backend!r} not understood. "
+        f"Set to 'modal' or 'amd', or set MODEL_SERVER_URL directly."
+    )
 
 
 async def transcribe_via_model_server(
@@ -48,10 +75,14 @@ async def transcribe_via_model_server(
                     files={"file": (os.path.basename(audio_path), f, "audio/wav")},
                 )
     except httpx.ConnectError as e:
+        backend = os.environ.get("MODEL_SERVER_BACKEND", "modal")
         raise RuntimeError(
             f"model-server unreachable at {url}: {e}. "
-            "Make sure the model-server container is up "
-            "(docker compose ps model-server) and MODEL_SERVER_URL is correct."
+            f"Backend is MODEL_SERVER_BACKEND={backend!r}. Try:\n"
+            f"  • Modal:  `modal deploy model-server/modal_app.py` and set "
+            f"MODEL_SERVER_MODAL_URL to the printed URL\n"
+            f"  • AMD:    `docker compose -f model-server/docker-compose.yml "
+            f"up -d` (then MODEL_SERVER_AMD_URL=http://localhost:9100)"
         ) from e
     if resp.status_code == 503:
         raise RuntimeError(
