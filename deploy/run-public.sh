@@ -122,9 +122,9 @@ fi
 if [[ ! -f "$REPO_ROOT/frontend/dist/index.html" ]]; then
   echo "  [build] frontend SPA"
   if command -v pnpm >/dev/null 2>&1; then
-    (cd "$REPO_ROOT/frontend" && pnpm install --frozen-lockfile && pnpm exec vite build)
+    (cd "$REPO_ROOT/frontend" && pnpm install --frozen-lockfile && VITE_API_URL="" pnpm exec vite build)
   else
-    (cd "$REPO_ROOT/frontend" && npm ci && npx vite build)
+    (cd "$REPO_ROOT/frontend" && npm ci && VITE_API_URL="" npx vite build)
   fi
 fi
 
