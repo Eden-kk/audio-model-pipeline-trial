@@ -241,11 +241,29 @@ Start a single-adapter run. JSON body:
 
 Returns `RunOut` with `id`, `clip_id`, `adapter`, `started_at`, `finished_at`,
 `latency_ms`, `cost_usd`, `input_preview`, `output_preview`, `result`,
-`error`. **Synchronous adapters** (most TTS, speaker-verify, LID, intent_llm,
-dispatch — `is_streaming: false`) block until the run completes, so the
-response already contains `result`. **Streaming adapters** (`is_streaming:
-true` — most ASR + the omni proxy lane) return immediately with a placeholder
-`Run`; the client should open `/ws/run/{id}` to watch partials.
+`error`.
+
+> **Important — `POST /api/runs` is ASR-only today.** The run executor calls
+> `adapter.transcribe()` (or `transcribe_stream()` for streaming) unconditionally,
+> with no category branch. Adapters in non-ASR categories (`tts`, `speaker_verify`,
+> `lid`, `intent_llm`, `dispatch`, `realtime_omni`) do not implement those methods
+> and will fail the run with a 5xx / `AttributeError`. Use these instead:
+>
+> - **TTS** → drive via the `asr-then-tts-roundtrip` recipe (`POST /api/runs/recipe`)
+>   or as a stage inside any recipe that declares a `tts` placeholder.
+> - **Speaker-verify** → enrol via `POST /api/enroll`, then any pipeline / fast-loop
+>   recipe stage that declares `speaker_verify` will use the saved embedding.
+> - **LID** → `POST /api/clips/{id}/autotag` (uses Whisper-LID under the hood),
+>   or the `lid` stage inside slow-loop recipes.
+> - **intent_llm / dispatch** → wired as later stages of slow-loop recipes; not
+>   exposed as a single-call endpoint.
+> - **realtime_omni** (`minicpm_o`) → `WS /ws/omni?adapter=minicpm_o&profile_id=…`
+>   (see §6).
+>
+> Streaming ASR adapters (`is_streaming: true`) return immediately with a
+> placeholder `Run`; the client opens `/ws/run/{id}` to watch partials.
+> Synchronous ASR adapters block until the run completes, so the response
+> already carries `result`.
 
 `config` shape varies per adapter; pull it from `adapter.config_schema` in
 `/api/adapters`. For example, Deepgram accepts
