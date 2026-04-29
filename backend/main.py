@@ -60,6 +60,10 @@ _ADAPTERS = [
     # LID adapters for slow-loop-routed (Slice 9.2)
     ("adapters.whisper_lid_adapter", "WhisperLIDAdapter"),
     ("adapters.deepgram_lid_adapter", "DeepgramLIDAdapter"),
+    # Realtime omni adapters (Plan C-extended-2 Slice O2). Edge candidate
+    # via Modal A100 + MiniCPM-o-4.5; Gemini Live cloud candidate parked
+    # behind Slice O4 until a GEMINI_API_KEY is available.
+    ("adapters.minicpm_o_adapter", "MiniCPMOAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
