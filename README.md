@@ -172,6 +172,26 @@ EOF
 
 For Canary-Qwen-2.5B (gated), set `HF_TOKEN` in your environment after accepting the license at the model's HuggingFace page.
 
+#### Path D — also adds local MiniCPM-o (realtime omni)
+
+The `minicpm_o` adapter (the `realtime_omni` lane behind `/realtime` in the SPA) posts to whatever URL `MINICPM_O_REALTIME_URL` resolves to. To run MiniCPM-o-4.5 locally on the same B200:
+
+```bash
+# 1. Provision its (separate) venv — transformers 4.51 + minicpmo-utils
+#    can't share venv-modelserver's torch 2.11 + NeMo stack.
+VENV_DIR=/raid/<you>/audio-stack/venv-minicpmo \
+  bash model-server/bootstrap-minicpmo.sh
+
+# 2. Boot the full stack with MiniCPM-o on
+ENABLE_MINICPMO=1 \
+MODEL_CACHE_DIR=/raid/<you>/audio-trial-models \
+  bash deploy/run-public.sh up
+
+# 3. Open the public URL → /realtime → pick MiniCPM-o → talk
+```
+
+The orchestrator pins `model-server-cuda` (NeMo) to GPU 0, `vllm` to GPU 1, and `minicpmo` to **GPU 7** by default. Override with `MINICPMO_GPU=N`. Cold-start adds ~60 s on first run (downloads ~18 GB into `MODEL_CACHE_DIR/hf_cache`); steady-state TTFA on a text-only prompt is ~750 ms.
+
 ### Capturing live audio for the AR-glass benchmark
 
 Once the app is reachable, recording your own ground-truth corpus is one click:
