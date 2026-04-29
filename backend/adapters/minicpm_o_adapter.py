@@ -71,9 +71,11 @@ class MiniCPMOAdapter:
             "system_prompt": {
                 "type": "string",
                 "default": (
-                    "You are a helpful realtime voice assistant. Reply briefly. "
-                    "When you see context lines like 'wearer just said: …' or "
-                    "'stranger just said: …', use them to know who is speaking."
+                    "You are a helpful realtime voice assistant. "
+                    "Listen to the audio and respond conversationally and briefly. "
+                    "Do NOT repeat or echo what was said — generate a reply. "
+                    "The [context] block below (if present) tells you who is speaking; "
+                    "use it for awareness only, do not output it."
                 ),
                 "description": "Prepended to every utterance request.",
             },
@@ -193,12 +195,15 @@ class MiniCPMOAdapter:
 
                 # Wearer-tag context appended as additional system lines
                 # so the model has fresh "who's talking" hints.
+                # Consume and clear context_lines so stale hints don't
+                # accumulate across turns.
                 merged_system = system_prompt
                 if context_lines:
                     merged_system = (
-                        merged_system + "\n\n[recent context]\n"
+                        merged_system + "\n\n[context — for awareness only, do not repeat]\n"
                         + "\n".join(context_lines[-8:])     # cap at last 8 lines
                     )
+                    context_lines.clear()
 
                 body: Dict[str, Any] = {
                     "audio_b64": base64.b64encode(wav_bytes).decode("ascii"),
