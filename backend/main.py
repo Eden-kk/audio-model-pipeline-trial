@@ -60,6 +60,10 @@ _ADAPTERS = [
     # LID adapters for slow-loop-routed (Slice 9.2)
     ("adapters.whisper_lid_adapter", "WhisperLIDAdapter"),
     ("adapters.deepgram_lid_adapter", "DeepgramLIDAdapter"),
+    # Realtime omni adapters (Plan C-extended-2 Slice O2). Edge candidate
+    # via Modal A100 + MiniCPM-o-4.5; Gemini Live cloud candidate parked
+    # behind Slice O4 until a GEMINI_API_KEY is available.
+    ("adapters.minicpm_o_adapter", "MiniCPMOAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
@@ -594,7 +598,14 @@ async def get_settings():
         "SPEECHMATICS_API_KEY", "GROQ_API_KEY", "CARTESIA_API_KEY",
         "ELEVENLABS_API_KEY", "OPENAI_API_KEY", "HF_TOKEN",
     ]
-    urls = ["INTENT_LLM_URL", "MODEL_SERVER_URL", "PUBLIC_ORIGIN", "DATA_DIR"]
+    urls = [
+        "INTENT_LLM_URL", "MODEL_SERVER_URL", "PUBLIC_ORIGIN", "DATA_DIR",
+        # Slice O5 — realtime omni endpoints
+        "MINICPM_O_REALTIME_URL", "GEMINI_VERTEX_PROJECT", "GEMINI_VERTEX_LOCATION",
+    ]
+    # Realtime-omni keys/credentials (Slice O5). GEMINI_API_KEY is parked
+    # behind Slice O4 — show as unset/parked until we wire that adapter.
+    keys = list(keys) + ["GEMINI_API_KEY"]
     api_keys: Dict[str, str] = {}
     for k in keys:
         v = os.environ.get(k, "")
@@ -609,6 +620,12 @@ async def get_settings():
         url_status[k] = {"value": v if v else None,
                          "configured": bool(v) and not v.startswith("your_")}
 
+    # Vertex AI ADC: green if both the credentials file env var is set AND
+    # that file actually exists on disk. The Settings page renders this
+    # alongside the project + location for the operator to spot-check.
+    adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    adc_ok = bool(adc_path) and Path(adc_path).expanduser().exists()
+
     return {
         "api_keys": api_keys,
         "service_urls": url_status,
@@ -617,6 +634,23 @@ async def get_settings():
             "default_model": os.environ.get(
                 "INTENT_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
             "key_configured": bool(os.environ.get("INTENT_LLM_KEY")),
+        },
+        "realtime_omni": {
+            "minicpm_o": {
+                "url_configured": bool(os.environ.get("MINICPM_O_REALTIME_URL")),
+                "url": os.environ.get("MINICPM_O_REALTIME_URL", ""),
+            },
+            "gemini_live": {
+                # Parked behind Slice O4; surfaced so the user knows what's missing.
+                "vertex_adc_configured": adc_ok,
+                "vertex_project": os.environ.get("GEMINI_VERTEX_PROJECT", ""),
+                "vertex_location": os.environ.get("GEMINI_VERTEX_LOCATION", ""),
+                "api_key_configured": bool(os.environ.get("GEMINI_API_KEY")),
+                "status_note": (
+                    "Vertex Live preview-gated for project " + (os.environ.get("GEMINI_VERTEX_PROJECT") or "?")
+                    + "; using Gen Language API + GEMINI_API_KEY when set (Slice O4)."
+                ),
+            },
         },
     }
 
@@ -1075,6 +1109,87 @@ async def _save_streamed_clip(
             _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
         )
     return clip_id
+
+
+@app.websocket("/ws/omni")
+async def ws_omni(
+    websocket: WebSocket,
+    adapter: str,
+    profile_id: str = "wearer",
+):
+    """Bidirectional realtime omni session.
+
+    Client side (browser): tagged binary frames over a WS — see
+    `realtime.omni_proxy` for the protocol. Server side: routes through
+    the named adapter's `omni_session()` async generator.
+
+    `profile_id` is reserved for the Slice O5 wearer-tag heartbeat — v1
+    accepts it but doesn't yet use it (the heartbeat coroutine isn't
+    wired in this slice).
+    """
+    from realtime.omni_proxy import proxy_omni_session   # local import
+
+    await websocket.accept()
+    try:
+        adapter_obj = registry.get(adapter)
+    except KeyError:
+        await websocket.send_json({
+            "event": "OmniError",
+            "error": f"Adapter {adapter!r} not registered",
+        })
+        await websocket.close()
+        return
+
+    if getattr(adapter_obj, "category", None) != "realtime_omni":
+        await websocket.send_json({
+            "event": "OmniError",
+            "error": (
+                f"Adapter {adapter!r} category is "
+                f"{getattr(adapter_obj, 'category', '?')!r}; need 'realtime_omni'"
+            ),
+        })
+        await websocket.close()
+        return
+
+    # v1: empty config → adapter falls back to its config_schema defaults.
+    # v1.5 will accept query params (system_prompt, generate_audio, …).
+    config: Dict[str, Any] = {
+        "profile_id": profile_id,
+    }
+
+    # Slice O5 — load the wearer enrollment + pyannote_verify adapter so
+    # the proxy can spin up a wearer-tag heartbeat in parallel with the
+    # omni session. Both are best-effort: missing enrollment / adapter
+    # just disables the heartbeat, omni still runs.
+    wearer_adapter = None
+    wearer_embedding_b64 = None
+    try:
+        from pipelines.runner import _load_enrollment_record   # type: ignore
+        rec = _load_enrollment_record(profile_id)
+        if rec and rec.get("embedding_b64") and rec.get("adapter"):
+            try:
+                wearer_adapter = registry.get(rec["adapter"])
+                wearer_embedding_b64 = rec["embedding_b64"]
+            except KeyError:
+                log.info(
+                    f"/ws/omni: wearer profile uses adapter "
+                    f"{rec['adapter']!r} which isn't loaded — heartbeat disabled."
+                )
+    except Exception as e:
+        log.warning(f"/ws/omni: failed to load wearer enrollment: {e}")
+
+    try:
+        await proxy_omni_session(
+            websocket, adapter_obj, config=config,
+            wearer_adapter=wearer_adapter,
+            wearer_embedding_b64=wearer_embedding_b64,
+        )
+    except Exception as e:
+        log.warning(f"/ws/omni session crashed: {type(e).__name__}: {e}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.websocket("/ws/mic")

@@ -1,0 +1,32 @@
+{
+  "id": "182806267b0d430eb55e2e0a45da393d",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "pub_es_01.wav",
+  "original_format": "wav",
+  "duration_s": 12.73,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "es",
+  "snr_db": 21.8,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librivox-public",
+    "language-es"
+  ],
+  "scenarios": [
+    "multilingual",
+    "lang-es",
+    "real-human-speech",
+    "public-domain",
+    "snr-clean",
+    "partial-speech",
+    "medium",
+    "single-speaker",
+    "indoor-cafe"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:51.803912Z"
+}

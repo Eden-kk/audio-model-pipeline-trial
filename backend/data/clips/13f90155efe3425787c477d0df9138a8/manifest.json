@@ -1,0 +1,33 @@
+{
+  "id": "13f90155efe3425787c477d0df9138a8",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "84_diff_00_from_1673_snr5.wav",
+  "original_format": "wav",
+  "duration_s": 8.0,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 26.3,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librispeech-84",
+    "musan-noise"
+  ],
+  "scenarios": [
+    "verification-noise-5db",
+    "noisy-5db",
+    "librispeech",
+    "real-human-speech",
+    "verification-negative",
+    "lang-en",
+    "snr-clean",
+    "partial-speech",
+    "medium",
+    "single-speaker"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:02:13.605296Z"
+}

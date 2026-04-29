@@ -50,6 +50,9 @@ interface StageNodeData {
   latencyMs?: number
   outputPreview?: string
   error?: string
+  /** Pre-run hint shown under the adapter dropdown — currently used for
+   *  speaker_verify ↔ enrolled-profile adapter mismatches. */
+  warning?: string
   onAdapterChange?: (adapterId: string) => void
   adapterChoices?: Adapter[]
 }
@@ -58,7 +61,7 @@ interface StageNodeData {
 
 function StageNode({ data }: NodeProps<StageNodeData>) {
   const { category, stageId, adapterId, state, latencyMs, outputPreview, error,
-          onAdapterChange, adapterChoices } = data
+          warning, onAdapterChange, adapterChoices } = data
   const choices = (adapterChoices ?? []).filter((a) => a.category === category)
 
   const ringColor =
@@ -115,6 +118,15 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
         </p>
       )}
 
+      {warning && state !== 'done' && state !== 'error' && (
+        <div
+          className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2"
+          title={warning}
+        >
+          ⚠ {warning}
+        </div>
+      )}
+
       {state === 'done' && latencyMs != null && (
         <div className="text-xs flex items-center gap-2">
           <span className="text-green-700">✓ {latencyMs.toFixed(0)} ms</span>
@@ -156,11 +168,13 @@ export default function Run() {
   const [runResult, setRunResult] = useState<RecipeRun | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Initial load
+  // Initial load — also pulls enrollments so the speaker_verify stage's
+  // adapter dropdown can default to whatever the wearer was enrolled with.
+  // Mismatching adapter ↔ enrollment causes a 256-vs-512 dim error otherwise.
   useEffect(() => {
-    Promise.all([listRecipes(), listClips(), listAdapters()])
-      .then(([rs, cs, as_]) => {
-        setRecipes(rs); setClips(cs); setAdapters(as_)
+    Promise.all([listRecipes(), listClips(), listAdapters(), listEnrollments()])
+      .then(([rs, cs, as_, es]) => {
+        setRecipes(rs); setClips(cs); setAdapters(as_); setEnrollments(es)
         if (!recipeId && rs.length > 0) setRecipeId(rs[0].id)
         if (!clipId && cs.length > 0) setClipId(cs[0].id)
       })
@@ -170,22 +184,33 @@ export default function Run() {
   const recipe = useMemo(() => recipes.find((r) => r.id === recipeId), [recipes, recipeId])
   const clip = useMemo(() => clips.find((c) => c.id === clipId), [clips, clipId])
 
-  // Reset stage state whenever recipe changes
+  // Reset stage state whenever recipe changes. For speaker_verify stages,
+  // bias the default toward whichever adapter the wearer's profile was
+  // enrolled with — Resemblyzer (256-d) and pyannote_verify (512-d)
+  // embeddings are NOT cross-comparable, and using the wrong one throws a
+  // numpy shape mismatch deep in the pipeline.
   useEffect(() => {
     if (!recipe) return
+    const wearerAdapter = enrollments.find((e) => e.profile_id === 'wearer')?.adapter
     const initialAdapters: Record<string, string> = {}
     const initialStates: Record<string, StageState> = {}
     for (const s of recipe.stages) {
-      // Auto-pick first adapter that matches the category
       const candidates = adapters.filter((a) => a.category === s.category)
-      if (candidates.length > 0) initialAdapters[s.id] = candidates[0].id
+      if (candidates.length === 0) { initialStates[s.id] = 'idle'; continue }
+
+      let pick = candidates[0].id
+      if (s.category === 'speaker_verify' && wearerAdapter) {
+        const match = candidates.find((a) => a.id === wearerAdapter)
+        if (match) pick = match.id
+      }
+      initialAdapters[s.id] = pick
       initialStates[s.id] = 'idle'
     }
     setStageAdapters(initialAdapters)
     setStageStates(initialStates)
     setStageResults({})
     setRunResult(null)
-  }, [recipeId, recipe, adapters])
+  }, [recipeId, recipe, adapters, enrollments])
 
   // Build react-flow nodes + edges from the current recipe + state
   const { nodes, edges } = useMemo(() => {
@@ -219,8 +244,24 @@ export default function Run() {
     // "language" all fit on a white pill in the middle of the arrow.
     const COL_W = 400
     const ROW_H = 200
+    // Wearer's enrolled adapter — used to flag speaker_verify stages whose
+    // adapter dropdown the user has flipped to a non-matching choice.
+    const wearer = enrollments.find((e) => e.profile_id === 'wearer')
+
     const nodes: Node[] = recipe.stages.map((s) => {
       const { col, row } = wavePos[s.id]
+      const picked = stageAdapters[s.id] ?? null
+
+      let warning: string | undefined
+      if (s.category === 'speaker_verify' && wearer && picked && picked !== wearer.adapter) {
+        warning = (
+          `Wearer enrolled with ${wearer.adapter} (${wearer.embedding_dim}-d). `
+          + `Switch back, or re-enroll with the new adapter — running this will fail.`
+        )
+      } else if (s.category === 'speaker_verify' && !wearer) {
+        warning = 'No wearer enrolled — go to Settings → Wearer enrollment first.'
+      }
+
       return {
         id: s.id,
         type: 'stage',
@@ -230,11 +271,12 @@ export default function Run() {
         data: {
           stageId: s.id,
           category: s.category,
-          adapterId: stageAdapters[s.id] ?? null,
+          adapterId: picked,
           state: stageStates[s.id] ?? 'idle',
           latencyMs: stageResults[s.id]?.latency_ms,
           outputPreview: stageResults[s.id]?.output_preview,
           error: stageResults[s.id]?.error ?? undefined,
+          warning,
           adapterChoices: adapters,
           onAdapterChange: (adapterId: string) =>
             setStageAdapters((prev) => ({ ...prev, [s.id]: adapterId })),
@@ -274,7 +316,7 @@ export default function Run() {
       }
     })
     return { nodes, edges }
-  }, [recipe, adapters, stageAdapters, stageStates, stageResults])
+  }, [recipe, adapters, enrollments, stageAdapters, stageStates, stageResults])
 
   async function handleRun() {
     if (!recipe || !clip) return

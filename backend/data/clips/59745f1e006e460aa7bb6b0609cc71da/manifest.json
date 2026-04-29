@@ -1,0 +1,32 @@
+{
+  "id": "59745f1e006e460aa7bb6b0609cc71da",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "pub_de_01.wav",
+  "original_format": "wav",
+  "duration_s": 11.51,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "de",
+  "snr_db": 35.1,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librivox-public",
+    "language-de"
+  ],
+  "scenarios": [
+    "multilingual",
+    "lang-de",
+    "real-human-speech",
+    "public-domain",
+    "snr-clean",
+    "partial-speech",
+    "medium",
+    "single-speaker",
+    "quiet-office"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:59.595037Z"
+}

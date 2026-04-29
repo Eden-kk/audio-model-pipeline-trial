@@ -308,6 +308,78 @@ INTENT_LLM_MODEL=gpt-4o-mini`}
           </div>
         </div>
 
+        {/* ─── Realtime omni status (Slice O5) ─────────────────────────── */}
+        {settings?.realtime_omni && (
+          <div className="card lg:col-span-2 flex flex-col gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                🎙 Realtime omni (fast loop)
+              </h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Edge candidate (MiniCPM-o on Modal) + cloud candidate (Gemini Live, parked).
+                The <code className="font-mono">/realtime</code> page uses these for the
+                bidirectional audio + video bench.
+              </p>
+            </div>
+
+            {/* MiniCPM-o */}
+            <div className="border-t border-gray-100 pt-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium text-gray-900">MiniCPM-o 4.5 (Modal A100)</span>
+                <StatusPill
+                  ok={settings.realtime_omni.minicpm_o.url_configured}
+                  label={
+                    settings.realtime_omni.minicpm_o.url_configured
+                      ? 'MINICPM_O_REALTIME_URL set'
+                      : 'MINICPM_O_REALTIME_URL not set'
+                  }
+                />
+              </div>
+              {settings.realtime_omni.minicpm_o.url_configured && (
+                <p className="text-[11px] text-gray-500 font-mono mt-1 truncate">
+                  {settings.realtime_omni.minicpm_o.url}
+                </p>
+              )}
+              <p className="text-[11px] text-gray-500 italic mt-2">
+                v1 ships chunked-HTTP fallback (per-utterance POST). Real WebSocket
+                shim for sub-second TTFA is v1.5.
+              </p>
+            </div>
+
+            {/* Gemini Live */}
+            <div className="border-t border-gray-100 pt-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium text-gray-900">Gemini Live (Vertex / Gen Language)</span>
+                <StatusPill
+                  ok={settings.realtime_omni.gemini_live.api_key_configured}
+                  label={
+                    settings.realtime_omni.gemini_live.api_key_configured
+                      ? 'GEMINI_API_KEY set (ready to wire adapter)'
+                      : 'GEMINI_API_KEY missing — Slice O4 parked'
+                  }
+                />
+                <StatusPill
+                  ok={settings.realtime_omni.gemini_live.vertex_adc_configured}
+                  label={
+                    settings.realtime_omni.gemini_live.vertex_adc_configured
+                      ? 'Vertex ADC OK (non-Live calls work)'
+                      : 'Vertex ADC missing'
+                  }
+                />
+              </div>
+              {settings.realtime_omni.gemini_live.vertex_project && (
+                <p className="text-[11px] text-gray-500 font-mono mt-1">
+                  Vertex project: {settings.realtime_omni.gemini_live.vertex_project} ·
+                  location: {settings.realtime_omni.gemini_live.vertex_location || 'global'}
+                </p>
+              )}
+              <p className="text-[11px] text-amber-700 italic mt-2">
+                {settings.realtime_omni.gemini_live.status_note}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* ─── API key status (full grid) ─────────────────────────────── */}
         {settings && (
           <div className="card lg:col-span-2 flex flex-col gap-3">

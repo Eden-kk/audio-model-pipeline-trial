@@ -185,6 +185,44 @@ def list_recipes() -> List[Dict[str, Any]]:
             ],
         },
         {
+            "id": "fast-loop-omni",
+            "name": "Fast loop (realtime omni · audio + video → speech)",
+            "description": (
+                "Bidirectional realtime session: microphone + camera frames "
+                "stream into a single multimodal omni model (MiniCPM-o on "
+                "Modal v1; Gemini Live cloud parked behind a key). The model "
+                "streams text + spoken audio back. A parallel pyannote_verify "
+                "heartbeat injects 'wearer just said: …' context lines into "
+                "the omni's prompt every 3 seconds. Fast loop · open the "
+                "/realtime page to actually run."
+            ),
+            "is_recipe": True,
+            "stages": [
+                {
+                    "id": "mic_camera",
+                    "category": "realtime_omni",   # virtual stage — visualised only
+                    "adapter": None,
+                    "config": {"role": "input"},
+                },
+                {
+                    "id": "omni",
+                    "category": "realtime_omni",
+                    "adapter": None,
+                    "config": {},
+                },
+                {
+                    "id": "speak_back",
+                    "category": "realtime_omni",   # virtual stage — visualised only
+                    "adapter": None,
+                    "config": {"role": "output"},
+                },
+            ],
+            "edges": [
+                {"from": "mic_camera", "to": "omni", "port": "media_stream"},
+                {"from": "omni", "to": "speak_back", "port": "omni_event"},
+            ],
+        },
+        {
             "id": "asr-then-tts",
             "name": "ASR → TTS round-trip",
             "description": (

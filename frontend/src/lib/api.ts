@@ -336,6 +336,19 @@ export interface BackendSettings {
     default_model: string
     key_configured: boolean
   }
+  realtime_omni?: {
+    minicpm_o: {
+      url_configured: boolean
+      url: string
+    }
+    gemini_live: {
+      vertex_adc_configured: boolean
+      vertex_project: string
+      vertex_location: string
+      api_key_configured: boolean
+      status_note: string
+    }
+  }
 }
 
 export async function getSettings(): Promise<BackendSettings> {

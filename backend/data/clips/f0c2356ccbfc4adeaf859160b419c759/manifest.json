@@ -1,0 +1,21 @@
+{
+  "id": "f0c2356ccbfc4adeaf859160b419c759",
+  "source": "record",
+  "modality": "video",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "recording.webm",
+  "original_format": "webm",
+  "duration_s": 6.84,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": null,
+  "snr_db": null,
+  "speaker_count_estimate": null,
+  "user_tags": [],
+  "scenarios": [],
+  "uploaded_by": "",
+  "created_at": "2026-04-28T07:40:55.485533Z",
+  "captured_transcript": null,
+  "captured_transcript_segments": []
+}

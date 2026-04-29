@@ -1,0 +1,33 @@
+{
+  "id": "9fd50ba1945346ff868001f1c06cf4e4",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "test_05_critical_server.wav",
+  "original_format": "wav",
+  "duration_s": 20.868,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 103.9,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "kokoro-tts",
+    "technical-vocab"
+  ],
+  "scenarios": [
+    "english-utterances",
+    "clean-en",
+    "assistant-query",
+    "tts-synth",
+    "lang-en",
+    "snr-clean",
+    "partial-speech",
+    "long-form",
+    "single-speaker",
+    "quiet-office"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:48.882699Z"
+}
