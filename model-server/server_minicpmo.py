@@ -30,6 +30,38 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 
+# ─── torchaudio.save BytesIO compat shim ────────────────────────────────────
+# torchaudio 2.11 routed file I/O through TorchCodec, whose AudioEncoder
+# refuses BytesIO sinks ("Couldn't allocate AVFormatContext ... Invalid
+# argument"). MiniCPM-o-4.5's TTS path (`stepaudio2/token2wav.py:141`)
+# calls `torchaudio.save(BytesIO, wav, sample_rate=24000, format='wav')`,
+# which silently breaks audio output. Monkey-patch torchaudio.save to
+# detour BytesIO destinations through soundfile.write (which natively
+# supports memory buffers); leave file-path saves on the upstream code path.
+import torchaudio  # noqa: E402
+import io as _io  # noqa: E402
+
+_orig_torchaudio_save = torchaudio.save
+
+
+def _torchaudio_save_bytesio_compat(uri, src, sample_rate, *args, **kwargs):
+    if isinstance(uri, _io.BytesIO) or isinstance(uri, _io.IOBase):
+        import soundfile as _sf
+        import numpy as _np
+        wav = src.detach().cpu().numpy() if isinstance(src, torch.Tensor) else _np.asarray(src)
+        # torchaudio is (channels, samples); soundfile is (samples, channels).
+        if wav.ndim == 2:
+            wav = wav.T
+        fmt = (kwargs.get("format") or "WAV").upper()
+        subtype = "PCM_16" if fmt in ("WAV", "WAVE") else None
+        _sf.write(uri, wav, int(sample_rate), format=fmt, subtype=subtype or "PCM_16")
+        return
+    return _orig_torchaudio_save(uri, src, sample_rate, *args, **kwargs)
+
+
+torchaudio.save = _torchaudio_save_bytesio_compat
+
+
 # ─── Sentinel for cross-thread generator drain ─────────────────────────────
 # StopIteration can't cross thread boundaries cleanly when the streaming
 # generator runs on the executor pool; sentinel-based termination is

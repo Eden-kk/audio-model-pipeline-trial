@@ -41,7 +41,10 @@ export UV_LINK_MODE=copy   # /raid bind-mount may not support hardlinks
 uv pip install --python "$VENV_DIR/bin/python" \
   --index-strategy unsafe-best-match \
   --extra-index-url "$TORCH_INDEX" \
-  "torch>=2.7" "torchaudio>=2.7" "torchvision>=0.22"
+  "torch>=2.7" "torchaudio>=2.7" "torchvision>=0.22" \
+  torchcodec   # torchaudio 2.11 routes file I/O through torchcodec; without
+               # it, MiniCPM-o's TTS step fails to load its prompt WAV
+               # ("ImportError: TorchCodec is required for load_with_torchcodec").
 
 # 2. The MiniCPM-o stack itself. Pinning notes:
 #    - transformers==4.51.0 because the auto-loaded `configuration_minicpmo.py`
