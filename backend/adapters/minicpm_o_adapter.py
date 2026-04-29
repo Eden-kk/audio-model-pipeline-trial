@@ -82,8 +82,21 @@ class MiniCPMOAdapter:
             "max_new_tokens": {"type": "integer", "default": 256, "minimum": 16, "maximum": 1024},
             "temperature": {"type": "number", "default": 0.3, "minimum": 0.0, "maximum": 1.5},
             "generate_audio": {
-                "type": "boolean", "default": True,
-                "description": "When true, response includes a synthesised audio reply (slower TTFA, full TTS render).",
+                "type": "boolean", "default": False,
+                "description": (
+                    "When true, response includes a synthesised audio reply "
+                    "(adds ~12-15 s TTS render; disable for text-only fast path)."
+                ),
+            },
+            "user_instruction": {
+                "type": "string",
+                "default": "",
+                "description": (
+                    "Text appended to the user turn alongside the audio. "
+                    "Leave blank to use the model-server default "
+                    "('Respond to what was said...'). "
+                    "Set explicitly to override."
+                ),
             },
             "url": {
                 "type": "string",
@@ -139,8 +152,10 @@ class MiniCPMOAdapter:
         system_prompt = config.get("system_prompt") or self.config_schema["properties"]["system_prompt"]["default"]
         max_new_tokens = int(config.get("max_new_tokens", 256))
         temperature = float(config.get("temperature", 0.3))
-        generate_audio = bool(config.get("generate_audio", True))
+        generate_audio = bool(config.get("generate_audio", False))
         request_timeout_s = float(config.get("request_timeout_s", 120.0))
+        # user_instruction: None → server uses its default; "" → suppress; str → override.
+        user_instruction: Optional[str] = config.get("user_instruction") or None
         # Default to streaming endpoint; flip to False to fall back to the
         # blocking /v1/omni path when needed (e.g. for diagnosing whether
         # the streaming endpoint introduced a regression).
@@ -213,6 +228,8 @@ class MiniCPMOAdapter:
                     "max_new_tokens": max_new_tokens,
                     "temperature": temperature,
                 }
+                if user_instruction is not None:
+                    body["user_instruction"] = user_instruction
                 if latest_image is not None:
                     body["image_b64"] = base64.b64encode(latest_image).decode("ascii")
 

@@ -73,6 +73,12 @@ _SENTINEL = object()
 # Mirror modal_app_minicpm.py exactly — the adapter's HTTP client expects
 # this shape on both lanes.
 
+_DEFAULT_USER_INSTRUCTION = (
+    "Respond to what was said. Be concise and conversational. "
+    "Do NOT transcribe or repeat what was said — reply to it."
+)
+
+
 class OmniRequest(BaseModel):
     audio_b64: Optional[str] = Field(
         default=None,
@@ -85,6 +91,16 @@ class OmniRequest(BaseModel):
     system_prompt: Optional[str] = Field(
         default=None,
         description="Optional system message prepended to the chat history.",
+    )
+    user_instruction: Optional[str] = Field(
+        default=None,
+        description=(
+            "Text appended to the user turn alongside the audio / image, "
+            "telling the model what to do with the media. "
+            "Defaults to a short 'respond to what was said' prompt that "
+            "prevents MiniCPM-o from falling back to pure ASR mode. "
+            "Set to '' to suppress the instruction entirely."
+        ),
     )
     history: Optional[list] = Field(
         default=None,
@@ -171,9 +187,20 @@ def _build_msgs(req: OmniRequest) -> List[Dict[str, Any]]:
             user_content.append(audio)
         except Exception as e:
             raise HTTPException(400, f"audio_b64 decode failed: {e}")
-    if not user_content:
+
+    # Append a text instruction alongside the media so MiniCPM-o generates
+    # a *reply* rather than falling back to its default ASR (transcribe) mode.
+    # req.user_instruction overrides the default; set it to "" to suppress.
+    # Pure-text warmup turns (no audio/image) get a minimal placeholder.
+    if user_content:  # media present — inject the instruction
+        instruction = req.user_instruction
+        if instruction is None:
+            instruction = _DEFAULT_USER_INSTRUCTION
+        if instruction:
+            user_content.append(instruction)
+    else:
         # Pure-text turn (rare; mostly for warmup / smoke-test).
-        user_content.append("Hello.")
+        user_content.append(req.user_instruction or "Hello.")
 
     msgs: List[Dict[str, Any]] = []
     if req.system_prompt:
@@ -288,7 +315,9 @@ async def omni_stream(req: OmniRequest):
         streaming_chat = getattr(model, "streaming_chat", None)
 
         # ── Path 1: native streaming_chat ────────────────────────────────
-        if callable(streaming_chat) and req.generate_audio:
+        # streaming_chat works for both text-only and audio generation;
+        # use it whenever the method exists (regardless of generate_audio).
+        if callable(streaming_chat):
             try:
                 full_text = ""
 
