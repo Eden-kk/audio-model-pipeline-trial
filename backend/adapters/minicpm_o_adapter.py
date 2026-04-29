@@ -71,17 +71,32 @@ class MiniCPMOAdapter:
             "system_prompt": {
                 "type": "string",
                 "default": (
-                    "You are a helpful realtime voice assistant. Reply briefly. "
-                    "When you see context lines like 'wearer just said: …' or "
-                    "'stranger just said: …', use them to know who is speaking."
+                    "You are a helpful realtime voice assistant. "
+                    "Listen to the audio and respond conversationally and briefly. "
+                    "Do NOT repeat or echo what was said — generate a reply. "
+                    "The [context] block below (if present) tells you who is speaking; "
+                    "use it for awareness only, do not output it."
                 ),
                 "description": "Prepended to every utterance request.",
             },
             "max_new_tokens": {"type": "integer", "default": 256, "minimum": 16, "maximum": 1024},
             "temperature": {"type": "number", "default": 0.3, "minimum": 0.0, "maximum": 1.5},
             "generate_audio": {
-                "type": "boolean", "default": True,
-                "description": "When true, response includes a synthesised audio reply (slower TTFA, full TTS render).",
+                "type": "boolean", "default": False,
+                "description": (
+                    "When true, response includes a synthesised audio reply "
+                    "(adds ~12-15 s TTS render; disable for text-only fast path)."
+                ),
+            },
+            "user_instruction": {
+                "type": "string",
+                "default": "",
+                "description": (
+                    "Text appended to the user turn alongside the audio. "
+                    "Leave blank to use the model-server default "
+                    "('Respond to what was said...'). "
+                    "Set explicitly to override."
+                ),
             },
             "url": {
                 "type": "string",
@@ -137,8 +152,10 @@ class MiniCPMOAdapter:
         system_prompt = config.get("system_prompt") or self.config_schema["properties"]["system_prompt"]["default"]
         max_new_tokens = int(config.get("max_new_tokens", 256))
         temperature = float(config.get("temperature", 0.3))
-        generate_audio = bool(config.get("generate_audio", True))
+        generate_audio = bool(config.get("generate_audio", False))
         request_timeout_s = float(config.get("request_timeout_s", 120.0))
+        # user_instruction: None → server uses its default; "" → suppress; str → override.
+        user_instruction: Optional[str] = config.get("user_instruction") or None
         # Default to streaming endpoint; flip to False to fall back to the
         # blocking /v1/omni path when needed (e.g. for diagnosing whether
         # the streaming endpoint introduced a regression).
@@ -193,12 +210,15 @@ class MiniCPMOAdapter:
 
                 # Wearer-tag context appended as additional system lines
                 # so the model has fresh "who's talking" hints.
+                # Consume and clear context_lines so stale hints don't
+                # accumulate across turns.
                 merged_system = system_prompt
                 if context_lines:
                     merged_system = (
-                        merged_system + "\n\n[recent context]\n"
+                        merged_system + "\n\n[context — for awareness only, do not repeat]\n"
                         + "\n".join(context_lines[-8:])     # cap at last 8 lines
                     )
+                    context_lines.clear()
 
                 body: Dict[str, Any] = {
                     "audio_b64": base64.b64encode(wav_bytes).decode("ascii"),
@@ -208,6 +228,8 @@ class MiniCPMOAdapter:
                     "max_new_tokens": max_new_tokens,
                     "temperature": temperature,
                 }
+                if user_instruction is not None:
+                    body["user_instruction"] = user_instruction
                 if latest_image is not None:
                     body["image_b64"] = base64.b64encode(latest_image).decode("ascii")
 

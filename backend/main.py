@@ -1225,6 +1225,18 @@ async def ws_mic(
     elif adapter in ("assemblyai",):
         await _proxy_assemblyai_mic(websocket, sample_rate, adapter_obj,
                                     save_to_corpus=save_to_corpus)
+    elif adapter in ("parakeet", "canary_1b_flash", "canary_qwen_25b"):
+        await _proxy_nemo_mic(websocket, sample_rate, adapter_obj,
+                              save_to_corpus=save_to_corpus)
+    elif adapter in ("gladia",):
+        await _proxy_gladia_mic(websocket, sample_rate, adapter_obj,
+                                save_to_corpus=save_to_corpus)
+    elif adapter in ("speechmatics",):
+        await _proxy_speechmatics_mic(websocket, sample_rate, adapter_obj,
+                                      save_to_corpus=save_to_corpus)
+    elif adapter in ("faster_whisper", "groq_whisper"):
+        await _proxy_chunked_batch_mic(websocket, sample_rate, adapter_obj,
+                                       save_to_corpus=save_to_corpus)
     else:
         await websocket.send_json({
             "event": "StageFailed",
@@ -1603,6 +1615,684 @@ async def _proxy_assemblyai_mic(
     finally:
         try: await client_ws.close()
         except Exception: pass
+
+
+async def _proxy_nemo_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+) -> None:
+    """Chunked-buffer mic proxy for batch NeMo ASR adapters (Parakeet, Canary).
+
+    The model-server exposes a single-shot /v1/transcribe endpoint; true
+    streaming is approximated by re-transcribing the accumulated PCM buffer
+    every CHUNK_INTERVAL_S seconds. Each re-transcribe emits a StageProgress
+    event so the UI shows rolling partials. On stop a final transcribe of the
+    full buffer emits StageCompleted.
+
+    Frame protocol matches the Deepgram/AssemblyAI proxies:
+      binary frames  = raw s16le PCM at `sample_rate` Hz, mono
+      text frames    = JSON control: {"type": "stop"}
+    """
+    import io
+    import json as _json
+    import tempfile
+    import wave
+
+    CHUNK_INTERVAL_S = 1.5  # re-transcribe cadence
+
+    adapter_id = getattr(adapter_obj, "id", "nemo")
+    pcm_buf = bytearray()
+    pcm_corpus_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
+
+    partial_count = 0
+    stopped = False
+    last_chunk_time = time.perf_counter()
+    latest_text = ""
+    t0 = time.perf_counter()
+
+    await client_ws.send_json({
+        "event": "StageStarted",
+        "adapter": adapter_id,
+        "sample_rate": sample_rate,
+    })
+
+    async def _transcribe_buf(buf: bytearray) -> str:
+        """Write buf to a temp WAV and POST to the model-server; return text."""
+        if len(buf) < sample_rate * 2 * 0.1:  # < 100 ms — skip
+            return ""
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(bytes(buf))
+        wav_bytes = wav_io.getvalue()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(wav_bytes)
+            tmp_path = tmp.name
+        try:
+            result = await adapter_obj.transcribe(tmp_path, {})
+            return result.get("text", "") or ""
+        finally:
+            try:
+                import os as _os
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    try:
+        while True:
+            now = time.perf_counter()
+            try:
+                msg = await asyncio.wait_for(client_ws.receive(), timeout=0.05)
+            except asyncio.TimeoutError:
+                msg = None
+
+            if msg is not None:
+                if msg.get("type") == "websocket.disconnect":
+                    stopped = True
+                    break
+                if "bytes" in msg and msg["bytes"]:
+                    chunk = msg["bytes"]
+                    if len(pcm_buf) < max_bytes:
+                        pcm_buf.extend(chunk)
+                    if pcm_corpus_buf is not None and len(pcm_corpus_buf) < max_bytes:
+                        pcm_corpus_buf.extend(chunk)
+                elif "text" in msg and msg["text"]:
+                    try:
+                        ctrl = _json.loads(msg["text"])
+                    except Exception:
+                        ctrl = {}
+                    if ctrl.get("type") == "stop":
+                        stopped = True
+                        break
+
+            # Periodic re-transcribe
+            if pcm_buf and (now - last_chunk_time) >= CHUNK_INTERVAL_S:
+                last_chunk_time = now
+                try:
+                    text = await _transcribe_buf(pcm_buf)
+                    if text:
+                        latest_text = text
+                except Exception:
+                    pass  # best-effort partials; don't abort the session
+                partial_count += 1
+                await client_ws.send_json({
+                    "event": "StageProgress",
+                    "partial_text": latest_text,
+                    "partial_index": partial_count,
+                })
+
+        # Final transcribe of full buffer
+        full_text = ""
+        if pcm_buf:
+            try:
+                full_text = await _transcribe_buf(pcm_buf) or latest_text
+            except Exception as e:
+                full_text = latest_text
+                log.warning("nemo mic final transcribe failed: %s", e)
+
+        wall_s = time.perf_counter() - t0
+        await client_ws.send_json({
+            "event": "StageCompleted",
+            "adapter": adapter_id,
+            "latency_ms": wall_s * 1000.0,
+            "result": {
+                "text": full_text,
+                "words": [],
+                "language": "en",
+                "wall_time_s": wall_s,
+            },
+            "is_streaming": True,
+        })
+
+        if pcm_corpus_buf is not None and len(pcm_corpus_buf) > 0:
+            try:
+                clip_id = await _save_streamed_clip(
+                    bytes(pcm_corpus_buf),
+                    sample_rate=sample_rate,
+                    vendor=adapter_id,
+                    transcript=full_text or None,
+                    transcript_segments=[],
+                )
+                if clip_id:
+                    await client_ws.send_json({
+                        "event": "ClipSaved",
+                        "clip_id": clip_id,
+                    })
+            except Exception as e:
+                log.warning("nemo mic save failed: %s", e)
+
+    except Exception as exc:
+        await client_ws.send_json({
+            "event": "StageFailed",
+            "adapter": adapter_id,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    finally:
+        try:
+            await client_ws.close()
+        except Exception:
+            pass
+
+
+async def _proxy_gladia_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+) -> None:
+    """Forward PCM from client → Gladia live-transcription WS; translate partials.
+
+    Gladia live endpoint: wss://api.gladia.io/audio/text/audio-transcription/
+    Session is initiated with a JSON config frame, then raw PCM frames are sent
+    as binary messages. The server emits JSON with ``event`` "transcript" carrying
+    ``type`` "final" or "partial".
+    """
+    import json as _json
+    import websockets as wslib
+
+    api_key = os.environ.get("GLADIA_API_KEY", "")
+    if not api_key:
+        await client_ws.send_json({"event": "StageFailed",
+                                   "error": "GLADIA_API_KEY not set"})
+        await client_ws.close()
+        return
+
+    pcm_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
+
+    url = "wss://api.gladia.io/audio/text/audio-transcription/"
+
+    t0 = time.perf_counter()
+    final_segments: list = []
+    latest_partial = ""
+    partial_count = 0
+
+    try:
+        async with wslib.connect(
+            url,
+            additional_headers={"X-Gladia-Key": api_key},
+            max_size=None,
+        ) as vendor_ws:
+            # Gladia live requires a JSON session-init frame first
+            await vendor_ws.send(_json.dumps({
+                "x_gladia_key": api_key,
+                "encoding": "wav/pcm",
+                "sample_rate": sample_rate,
+                "bit_depth": 16,
+                "channels": 1,
+                "language_behaviour": "automatic multiple languages",
+            }))
+
+            await client_ws.send_json({
+                "event": "StageStarted",
+                "adapter": "gladia",
+                "sample_rate": sample_rate,
+            })
+
+            async def client_to_vendor() -> None:
+                while True:
+                    msg = await client_ws.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        return
+                    if "bytes" in msg and msg["bytes"]:
+                        await vendor_ws.send(msg["bytes"])
+                        if pcm_buf is not None and len(pcm_buf) < max_bytes:
+                            pcm_buf.extend(msg["bytes"])
+                    elif "text" in msg and msg["text"]:
+                        try:
+                            ctrl = _json.loads(msg["text"])
+                        except Exception:
+                            continue
+                        if ctrl.get("type") == "stop":
+                            await vendor_ws.send(_json.dumps({"type": "stop_recording"}))
+                            return
+
+            async def vendor_to_client() -> None:
+                nonlocal partial_count, latest_partial
+                async for raw in vendor_ws:
+                    if isinstance(raw, bytes):
+                        continue
+                    try:
+                        msg = _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        continue
+                    # Gladia live emits {"event": "transcript", "type": "final"|"partial", ...}
+                    if msg.get("event") != "transcript":
+                        continue
+                    text = msg.get("transcription", "") or ""
+                    is_final = msg.get("type") == "final"
+                    if is_final and text:
+                        final_segments.append(text)
+                        latest_partial = ""
+                    else:
+                        latest_partial = text
+                    accumulated = " ".join(final_segments)
+                    if latest_partial:
+                        accumulated = (accumulated + " " + latest_partial).strip()
+                    partial_count += 1
+                    await client_ws.send_json({
+                        "event": "StageProgress",
+                        "partial_text": accumulated,
+                        "partial_index": partial_count,
+                    })
+
+            send_task = asyncio.create_task(client_to_vendor())
+            recv_task = asyncio.create_task(vendor_to_client())
+            done, pending = await asyncio.wait(
+                {send_task, recv_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try: await t
+                except Exception: pass
+
+        full_text = " ".join(final_segments).strip()
+        wall_s = time.perf_counter() - t0
+        await client_ws.send_json({
+            "event": "StageCompleted",
+            "adapter": "gladia",
+            "latency_ms": wall_s * 1000.0,
+            "result": {
+                "text": full_text,
+                "words": [],
+                "language": "auto",
+                "wall_time_s": wall_s,
+            },
+            "is_streaming": True,
+        })
+        if pcm_buf is not None and len(pcm_buf) > 0:
+            try:
+                clip_id = await _save_streamed_clip(
+                    bytes(pcm_buf),
+                    sample_rate=sample_rate,
+                    vendor="gladia",
+                    transcript=full_text or None,
+                    transcript_segments=[],
+                )
+                if clip_id:
+                    await client_ws.send_json({"event": "ClipSaved", "clip_id": clip_id})
+            except Exception as e:
+                log.warning("gladia mic save failed: %s", e)
+    except Exception as exc:
+        await client_ws.send_json({
+            "event": "StageFailed",
+            "adapter": "gladia",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    finally:
+        try: await client_ws.close()
+        except Exception: pass
+
+
+async def _proxy_speechmatics_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+) -> None:
+    """Forward PCM from client → Speechmatics real-time WS; translate AddTranscript frames.
+
+    Speechmatics RT: wss://eu2.rt.speechmatics.com/v2/
+    Session requires a StartRecognition JSON frame, then binary audio chunks.
+    Server emits AddPartialTranscript and AddTranscript (final) JSON events.
+    """
+    import json as _json
+    import websockets as wslib
+
+    api_key = os.environ.get("SPEECHMATICS_API_KEY", "")
+    if not api_key:
+        await client_ws.send_json({"event": "StageFailed",
+                                   "error": "SPEECHMATICS_API_KEY not set"})
+        await client_ws.close()
+        return
+
+    pcm_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
+
+    url = "wss://eu2.rt.speechmatics.com/v2/"
+
+    t0 = time.perf_counter()
+    final_segments: list = []
+    latest_partial = ""
+    partial_count = 0
+    all_words: list = []
+
+    try:
+        async with wslib.connect(
+            url,
+            additional_headers={"Authorization": f"Bearer {api_key}"},
+            max_size=None,
+        ) as vendor_ws:
+            # Speechmatics RT requires StartRecognition as the first message
+            await vendor_ws.send(_json.dumps({
+                "message": "StartRecognition",
+                "audio_format": {
+                    "type": "raw",
+                    "encoding": "pcm_s16le",
+                    "sample_rate": sample_rate,
+                },
+                "transcription_config": {
+                    "language": "en",
+                    "operating_point": "enhanced",
+                    "enable_partials": True,
+                },
+            }))
+
+            # Wait for RecognitionStarted acknowledgement
+            ack_raw = await vendor_ws.recv()
+            try:
+                ack = _json.loads(ack_raw)
+                if ack.get("message") == "Error":
+                    await client_ws.send_json({
+                        "event": "StageFailed",
+                        "adapter": "speechmatics",
+                        "error": ack.get("reason", "Speechmatics rejected session"),
+                    })
+                    await client_ws.close()
+                    return
+            except _json.JSONDecodeError:
+                pass
+
+            await client_ws.send_json({
+                "event": "StageStarted",
+                "adapter": "speechmatics",
+                "sample_rate": sample_rate,
+            })
+
+            async def client_to_vendor() -> None:
+                while True:
+                    msg = await client_ws.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        return
+                    if "bytes" in msg and msg["bytes"]:
+                        await vendor_ws.send(msg["bytes"])
+                        if pcm_buf is not None and len(pcm_buf) < max_bytes:
+                            pcm_buf.extend(msg["bytes"])
+                    elif "text" in msg and msg["text"]:
+                        try:
+                            ctrl = _json.loads(msg["text"])
+                        except Exception:
+                            continue
+                        if ctrl.get("type") == "stop":
+                            await vendor_ws.send(_json.dumps({"message": "EndOfStream",
+                                                              "last_seq_no": 0}))
+                            return
+
+            async def vendor_to_client() -> None:
+                nonlocal partial_count, latest_partial
+                async for raw in vendor_ws:
+                    if isinstance(raw, bytes):
+                        continue
+                    try:
+                        msg = _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        continue
+                    mtype = msg.get("message", "")
+                    if mtype == "EndOfTranscript":
+                        return
+                    if mtype == "AddPartialTranscript":
+                        results = msg.get("results", [])
+                        latest_partial = " ".join(
+                            r.get("alternatives", [{}])[0].get("content", "")
+                            for r in results
+                            if r.get("type") == "word" and r.get("alternatives")
+                        )
+                    elif mtype == "AddTranscript":
+                        results = msg.get("results", [])
+                        words_in_seg = []
+                        for r in results:
+                            if r.get("type") != "word":
+                                continue
+                            alts = r.get("alternatives", [])
+                            if not alts:
+                                continue
+                            top = alts[0]
+                            words_in_seg.append(top.get("content", ""))
+                            all_words.append({
+                                "word": top.get("content", ""),
+                                "start": float(r.get("start_time", 0.0)),
+                                "end": float(r.get("end_time", 0.0)),
+                                "confidence": top.get("confidence"),
+                            })
+                        seg_text = " ".join(words_in_seg).strip()
+                        if seg_text:
+                            final_segments.append(seg_text)
+                        latest_partial = ""
+                    else:
+                        continue
+                    accumulated = " ".join(final_segments)
+                    if latest_partial:
+                        accumulated = (accumulated + " " + latest_partial).strip()
+                    partial_count += 1
+                    await client_ws.send_json({
+                        "event": "StageProgress",
+                        "partial_text": accumulated,
+                        "partial_index": partial_count,
+                    })
+
+            send_task = asyncio.create_task(client_to_vendor())
+            recv_task = asyncio.create_task(vendor_to_client())
+            done, pending = await asyncio.wait(
+                {send_task, recv_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            for t in pending:
+                try: await t
+                except Exception: pass
+
+        full_text = " ".join(final_segments).strip()
+        wall_s = time.perf_counter() - t0
+        await client_ws.send_json({
+            "event": "StageCompleted",
+            "adapter": "speechmatics",
+            "latency_ms": wall_s * 1000.0,
+            "result": {
+                "text": full_text,
+                "words": all_words,
+                "language": "en",
+                "wall_time_s": wall_s,
+            },
+            "is_streaming": True,
+        })
+        if pcm_buf is not None and len(pcm_buf) > 0:
+            try:
+                clip_id = await _save_streamed_clip(
+                    bytes(pcm_buf),
+                    sample_rate=sample_rate,
+                    vendor="speechmatics",
+                    transcript=full_text or None,
+                    transcript_segments=[],
+                )
+                if clip_id:
+                    await client_ws.send_json({"event": "ClipSaved", "clip_id": clip_id})
+            except Exception as e:
+                log.warning("speechmatics mic save failed: %s", e)
+    except Exception as exc:
+        await client_ws.send_json({
+            "event": "StageFailed",
+            "adapter": "speechmatics",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    finally:
+        try: await client_ws.close()
+        except Exception: pass
+
+
+async def _proxy_chunked_batch_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+) -> None:
+    """Chunked-buffer mic proxy for batch-only adapters (faster_whisper, groq_whisper).
+
+    Buffers incoming PCM, re-transcribes every CHUNK_INTERVAL_S seconds via the
+    adapter's .transcribe(path, config) method, emitting StageProgress partials.
+    On stop a final transcribe of the full buffer emits StageCompleted.
+
+    Works for any adapter with a synchronous or async .transcribe(path, {}) method
+    and a string .id attribute. Used by faster_whisper (local) and groq_whisper
+    (cloud REST).
+    """
+    import io
+    import json as _json
+    import tempfile
+    import wave
+
+    CHUNK_INTERVAL_S = 1.5
+
+    adapter_id = getattr(adapter_obj, "id", "unknown")
+
+    # groq_whisper requires its API key — surface the error early
+    if adapter_id == "groq_whisper":
+        api_key = os.environ.get("GROQ_API_KEY", "")
+        if not api_key:
+            await client_ws.send_json({"event": "StageFailed",
+                                       "error": "GROQ_API_KEY not set"})
+            await client_ws.close()
+            return
+
+    pcm_buf = bytearray()
+    pcm_corpus_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
+
+    partial_count = 0
+    stopped = False
+    last_chunk_time = time.perf_counter()
+    latest_text = ""
+    t0 = time.perf_counter()
+
+    await client_ws.send_json({
+        "event": "StageStarted",
+        "adapter": adapter_id,
+        "sample_rate": sample_rate,
+    })
+
+    async def _transcribe_buf(buf: bytearray) -> str:
+        if len(buf) < sample_rate * 2 * 0.1:
+            return ""
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(bytes(buf))
+        wav_bytes = wav_io.getvalue()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(wav_bytes)
+            tmp_path = tmp.name
+        try:
+            result = await adapter_obj.transcribe(tmp_path, {})
+            return result.get("text", "") or ""
+        finally:
+            try:
+                import os as _os
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    try:
+        while True:
+            now = time.perf_counter()
+            try:
+                msg = await asyncio.wait_for(client_ws.receive(), timeout=0.05)
+            except asyncio.TimeoutError:
+                msg = None
+
+            if msg is not None:
+                if msg.get("type") == "websocket.disconnect":
+                    stopped = True
+                    break
+                if "bytes" in msg and msg["bytes"]:
+                    chunk = msg["bytes"]
+                    if len(pcm_buf) < max_bytes:
+                        pcm_buf.extend(chunk)
+                    if pcm_corpus_buf is not None and len(pcm_corpus_buf) < max_bytes:
+                        pcm_corpus_buf.extend(chunk)
+                elif "text" in msg and msg["text"]:
+                    try:
+                        ctrl = _json.loads(msg["text"])
+                    except Exception:
+                        ctrl = {}
+                    if ctrl.get("type") == "stop":
+                        stopped = True
+                        break
+
+            if pcm_buf and (now - last_chunk_time) >= CHUNK_INTERVAL_S:
+                last_chunk_time = now
+                try:
+                    text = await _transcribe_buf(pcm_buf)
+                    if text:
+                        latest_text = text
+                except Exception:
+                    pass
+                partial_count += 1
+                await client_ws.send_json({
+                    "event": "StageProgress",
+                    "partial_text": latest_text,
+                    "partial_index": partial_count,
+                })
+
+        full_text = ""
+        if pcm_buf:
+            try:
+                full_text = await _transcribe_buf(pcm_buf) or latest_text
+            except Exception as e:
+                full_text = latest_text
+                log.warning("%s mic final transcribe failed: %s", adapter_id, e)
+
+        wall_s = time.perf_counter() - t0
+        await client_ws.send_json({
+            "event": "StageCompleted",
+            "adapter": adapter_id,
+            "latency_ms": wall_s * 1000.0,
+            "result": {
+                "text": full_text,
+                "words": [],
+                "language": "en",
+                "wall_time_s": wall_s,
+            },
+            "is_streaming": True,
+        })
+
+        if pcm_corpus_buf is not None and len(pcm_corpus_buf) > 0:
+            try:
+                clip_id = await _save_streamed_clip(
+                    bytes(pcm_corpus_buf),
+                    sample_rate=sample_rate,
+                    vendor=adapter_id,
+                    transcript=full_text or None,
+                    transcript_segments=[],
+                )
+                if clip_id:
+                    await client_ws.send_json({"event": "ClipSaved", "clip_id": clip_id})
+            except Exception as e:
+                log.warning("%s mic save failed: %s", adapter_id, e)
+
+    except Exception as exc:
+        await client_ws.send_json({
+            "event": "StageFailed",
+            "adapter": adapter_id,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+    finally:
+        try:
+            await client_ws.close()
+        except Exception:
+            pass
 
 
 # ─── Static frontend mount (production, MUST be last) ────────────────────────

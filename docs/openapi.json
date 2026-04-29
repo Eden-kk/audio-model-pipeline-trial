@@ -1,0 +1,1339 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "audio-trial-backend",
+        "version": "0.1.0"
+    },
+    "paths": {
+        "/api/health": {
+            "get": {
+                "summary": "Health",
+                "operationId": "health_api_health_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/adapters": {
+            "get": {
+                "summary": "List Adapters",
+                "description": "List registered adapters. Optional ?category=asr|tts|speaker_verify filter.\n\nReturns a flat list (REST convention) \u2014 frontend expects `Adapter[]` directly.",
+                "operationId": "list_adapters_api_adapters_get",
+                "parameters": [
+                    {
+                        "name": "category",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ],
+                            "title": "Category"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/clips": {
+            "get": {
+                "summary": "Get Clips",
+                "operationId": "get_clips_api_clips_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": true,
+                                    "type": "object",
+                                    "title": "Response Get Clips Api Clips Get"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "summary": "Upload Clip",
+                "description": "Accept an audio OR video file. Video containers (.mp4, .mov, .webm, .mkv,\n.avi, .m4v, .ts, .mts) get their audio track extracted to wav-16k-mono via\nffmpeg; the original is kept adjacent for reference. Adapters always read\nthe canonical wav.",
+                "operationId": "upload_clip_api_clips_post",
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_upload_clip_api_clips_post"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ClipOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/clips/{clip_id}": {
+            "patch": {
+                "summary": "Update Clip",
+                "description": "Mutate a clip's user_tags / scenarios + auto-tagger metadata \u2014\nused by the Corpus page chip tagger and the ingest auto-tagger.\nOther fields (id / format / duration_s / etc.) are immutable\npost-ingest by design.",
+                "operationId": "update_clip_api_clips__clip_id__patch",
+                "parameters": [
+                    {
+                        "name": "clip_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Clip Id"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ClipPatch"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ClipOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "summary": "Delete Clip",
+                "operationId": "delete_clip_api_clips__clip_id__delete",
+                "parameters": [
+                    {
+                        "name": "clip_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Clip Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/clips/{clip_id}/autotag": {
+            "post": {
+                "summary": "Autotag Clip Endpoint",
+                "description": "Run the heuristic auto-tagger on a single clip and persist the\ndetected scenarios to its manifest. Returns the detected list +\nfeature values + per-tag evidence so the UI can show \"why\".",
+                "operationId": "autotag_clip_endpoint_api_clips__clip_id__autotag_post",
+                "parameters": [
+                    {
+                        "name": "clip_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Clip Id"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "anyOf": [
+                                    {
+                                        "$ref": "#/components/schemas/AutoTagOptions"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "title": "Opts"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AutoTagResult"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/clips/autotag-all": {
+            "post": {
+                "summary": "Autotag All Clips",
+                "description": "Run the heuristic auto-tagger on EVERY clip in the corpus. The\nCorpus page's 'Auto-tag all' button hits this; clips run sequentially\nso we don't thrash CPU when the user has 100+ clips. Per-clip failures\ndon't abort the batch \u2014 they're returned in the `errors` map so the\nUI can flag them.",
+                "operationId": "autotag_all_clips_api_clips_autotag_all_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "anyOf": [
+                                    {
+                                        "$ref": "#/components/schemas/AutoTagOptions"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ],
+                                "title": "Opts"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AutoTagAllResult"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/clips/{clip_id}/audio": {
+            "get": {
+                "summary": "Stream Clip Audio",
+                "operationId": "stream_clip_audio_api_clips__clip_id__audio_get",
+                "parameters": [
+                    {
+                        "name": "clip_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Clip Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/enroll": {
+            "get": {
+                "summary": "List Enrollments",
+                "description": "List enrolled profiles. Reads data/enrollments/*.json metadata.",
+                "operationId": "list_enrollments_api_enroll_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": true,
+                                    "type": "object",
+                                    "title": "Response List Enrollments Api Enroll Get"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "summary": "Enroll Wearer",
+                "description": "Enroll a reference clip \u2192 embedding \u2192 JSON on disk.\n\nAudio is saved to a tempfile, the chosen speaker_verify adapter's\n`enroll()` method is called, and the resulting embedding (plus metadata)\nis persisted to `data/enrollments/<profile_id>.json` so the slow-loop\nspeaker_tag stage can load it without re-uploading.",
+                "operationId": "enroll_wearer_api_enroll_post",
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "$ref": "#/components/schemas/Body_enroll_wearer_api_enroll_post"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EnrollOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/enroll/{profile_id}": {
+            "delete": {
+                "summary": "Delete Enrollment",
+                "description": "Delete a saved enrollment so the wearer can re-enroll.",
+                "operationId": "delete_enrollment_api_enroll__profile_id__delete",
+                "parameters": [
+                    {
+                        "name": "profile_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Profile Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Successful Response"
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/settings": {
+            "get": {
+                "summary": "Get Settings",
+                "description": "Read-only env-var status for the Settings page.\n\nReports which API keys + service URLs are configured WITHOUT exposing\nsecret values. Used to render green/grey 'configured' chips beside\neach adapter category.",
+                "operationId": "get_settings_api_settings_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/enroll/{profile_id}/embedding": {
+            "get": {
+                "summary": "Get Enrollment Embedding",
+                "description": "Return the raw embedding_b64 for a profile \u2014 used by the slow-loop\nspeaker_tag stage to feed verify_segments() without round-tripping\nthrough the client.",
+                "operationId": "get_enrollment_embedding_api_enroll__profile_id__embedding_get",
+                "parameters": [
+                    {
+                        "name": "profile_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Profile Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/runs": {
+            "post": {
+                "summary": "Create Run",
+                "operationId": "create_run_api_runs_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RunRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RunOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/runs/{run_id}": {
+            "get": {
+                "summary": "Fetch Run",
+                "operationId": "fetch_run_api_runs__run_id__get",
+                "parameters": [
+                    {
+                        "name": "run_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Run Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RunOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/recipes": {
+            "get": {
+                "summary": "Get Recipes",
+                "description": "List built-in pipeline recipes (Slice 5).\n\nEach recipe declares stages with category placeholders; the client picks\na concrete adapter per stage when starting a run.",
+                "operationId": "get_recipes_api_recipes_get",
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/recipes/{recipe_id}": {
+            "get": {
+                "summary": "Get Recipe One",
+                "operationId": "get_recipe_one_api_recipes__recipe_id__get",
+                "parameters": [
+                    {
+                        "name": "recipe_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Recipe Id"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {}
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/runs/recipe": {
+            "post": {
+                "summary": "Create Recipe Run",
+                "description": "Run a multi-stage recipe pipeline against a clip.\n\nPer-stage adapter override is mandatory because recipes ship with\n`adapter: None` placeholders. The runner walks stages in order, threading\neach stage's output into the next (ASR text \u2192 TTS input, etc).\nPer-stage events stream over /ws/run/{id}.",
+                "operationId": "create_recipe_run_api_runs_recipe_post",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/RecipeRunRequest"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "responses": {
+                    "201": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/RecipeRunOut"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "AutoTagAllResult": {
+                "properties": {
+                    "total": {
+                        "type": "integer",
+                        "title": "Total"
+                    },
+                    "succeeded": {
+                        "type": "integer",
+                        "title": "Succeeded"
+                    },
+                    "failed": {
+                        "type": "integer",
+                        "title": "Failed"
+                    },
+                    "results": {
+                        "items": {},
+                        "type": "array",
+                        "title": "Results"
+                    },
+                    "errors": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "type": "object",
+                        "title": "Errors"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "total",
+                    "succeeded",
+                    "failed",
+                    "results",
+                    "errors"
+                ],
+                "title": "AutoTagAllResult"
+            },
+            "AutoTagOptions": {
+                "properties": {
+                    "use_lid": {
+                        "type": "boolean",
+                        "title": "Use Lid",
+                        "default": true
+                    },
+                    "use_speaker_spread": {
+                        "type": "boolean",
+                        "title": "Use Speaker Spread",
+                        "default": true
+                    },
+                    "replace": {
+                        "type": "boolean",
+                        "title": "Replace",
+                        "default": false
+                    }
+                },
+                "type": "object",
+                "title": "AutoTagOptions"
+            },
+            "AutoTagResult": {
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "title": "Clip Id"
+                    },
+                    "detected": {
+                        "items": {},
+                        "type": "array",
+                        "title": "Detected"
+                    },
+                    "final_scenarios": {
+                        "items": {},
+                        "type": "array",
+                        "title": "Final Scenarios"
+                    },
+                    "features": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Features"
+                    },
+                    "evidence": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "type": "object",
+                        "title": "Evidence"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "clip_id",
+                    "detected",
+                    "final_scenarios",
+                    "features",
+                    "evidence"
+                ],
+                "title": "AutoTagResult"
+            },
+            "Body_enroll_wearer_api_enroll_post": {
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "title": "File"
+                    },
+                    "adapter": {
+                        "type": "string",
+                        "title": "Adapter",
+                        "default": "pyannote_verify"
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "title": "Profile Id",
+                        "default": "wearer"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "file"
+                ],
+                "title": "Body_enroll_wearer_api_enroll_post"
+            },
+            "Body_upload_clip_api_clips_post": {
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "title": "File"
+                    },
+                    "source": {
+                        "type": "string",
+                        "title": "Source",
+                        "default": "upload"
+                    },
+                    "uploaded_by": {
+                        "type": "string",
+                        "title": "Uploaded By",
+                        "default": ""
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "file"
+                ],
+                "title": "Body_upload_clip_api_clips_post"
+            },
+            "ClipOut": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "source": {
+                        "type": "string",
+                        "title": "Source"
+                    },
+                    "modality": {
+                        "type": "string",
+                        "title": "Modality"
+                    },
+                    "filename": {
+                        "type": "string",
+                        "title": "Filename"
+                    },
+                    "format": {
+                        "type": "string",
+                        "title": "Format"
+                    },
+                    "original_filename": {
+                        "type": "string",
+                        "title": "Original Filename",
+                        "default": ""
+                    },
+                    "original_format": {
+                        "type": "string",
+                        "title": "Original Format",
+                        "default": ""
+                    },
+                    "duration_s": {
+                        "type": "number",
+                        "title": "Duration S"
+                    },
+                    "sample_rate": {
+                        "type": "integer",
+                        "title": "Sample Rate"
+                    },
+                    "channels": {
+                        "type": "integer",
+                        "title": "Channels"
+                    },
+                    "language_detected": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Language Detected"
+                    },
+                    "snr_db": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Snr Db"
+                    },
+                    "speaker_count_estimate": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Speaker Count Estimate"
+                    },
+                    "user_tags": {
+                        "items": {},
+                        "type": "array",
+                        "title": "User Tags"
+                    },
+                    "scenarios": {
+                        "items": {},
+                        "type": "array",
+                        "title": "Scenarios"
+                    },
+                    "uploaded_by": {
+                        "type": "string",
+                        "title": "Uploaded By"
+                    },
+                    "created_at": {
+                        "type": "string",
+                        "title": "Created At"
+                    },
+                    "captured_transcript": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Captured Transcript"
+                    },
+                    "captured_transcript_segments": {
+                        "items": {},
+                        "type": "array",
+                        "title": "Captured Transcript Segments",
+                        "default": []
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "source",
+                    "modality",
+                    "filename",
+                    "format",
+                    "duration_s",
+                    "sample_rate",
+                    "channels",
+                    "language_detected",
+                    "snr_db",
+                    "speaker_count_estimate",
+                    "user_tags",
+                    "scenarios",
+                    "uploaded_by",
+                    "created_at"
+                ],
+                "title": "ClipOut"
+            },
+            "ClipPatch": {
+                "properties": {
+                    "user_tags": {
+                        "anyOf": [
+                            {
+                                "items": {},
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "User Tags"
+                    },
+                    "scenarios": {
+                        "anyOf": [
+                            {
+                                "items": {},
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Scenarios"
+                    },
+                    "language_detected": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Language Detected"
+                    },
+                    "snr_db": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Snr Db"
+                    },
+                    "speaker_count_estimate": {
+                        "anyOf": [
+                            {
+                                "type": "integer"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Speaker Count Estimate"
+                    },
+                    "captured_transcript": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Captured Transcript"
+                    },
+                    "captured_transcript_segments": {
+                        "anyOf": [
+                            {
+                                "items": {},
+                                "type": "array"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Captured Transcript Segments"
+                    }
+                },
+                "type": "object",
+                "title": "ClipPatch"
+            },
+            "EnrollOut": {
+                "properties": {
+                    "profile_id": {
+                        "type": "string",
+                        "title": "Profile Id"
+                    },
+                    "adapter": {
+                        "type": "string",
+                        "title": "Adapter"
+                    },
+                    "embedding_dim": {
+                        "type": "integer",
+                        "title": "Embedding Dim"
+                    },
+                    "embedding_dtype": {
+                        "type": "string",
+                        "title": "Embedding Dtype"
+                    },
+                    "duration_s": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Duration S"
+                    },
+                    "saved_to": {
+                        "type": "string",
+                        "title": "Saved To"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "profile_id",
+                    "adapter",
+                    "embedding_dim",
+                    "embedding_dtype",
+                    "saved_to"
+                ],
+                "title": "EnrollOut"
+            },
+            "HTTPValidationError": {
+                "properties": {
+                    "detail": {
+                        "items": {
+                            "$ref": "#/components/schemas/ValidationError"
+                        },
+                        "type": "array",
+                        "title": "Detail"
+                    }
+                },
+                "type": "object",
+                "title": "HTTPValidationError"
+            },
+            "RecipeRunOut": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "clip_id": {
+                        "type": "string",
+                        "title": "Clip Id"
+                    },
+                    "recipe_id": {
+                        "type": "string",
+                        "title": "Recipe Id"
+                    },
+                    "started_at": {
+                        "type": "string",
+                        "title": "Started At"
+                    },
+                    "finished_at": {
+                        "type": "string",
+                        "title": "Finished At"
+                    },
+                    "stages": {
+                        "items": {},
+                        "type": "array",
+                        "title": "Stages"
+                    },
+                    "total_latency_ms": {
+                        "type": "number",
+                        "title": "Total Latency Ms"
+                    },
+                    "total_cost_usd": {
+                        "type": "number",
+                        "title": "Total Cost Usd"
+                    },
+                    "error": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Error"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "clip_id",
+                    "recipe_id",
+                    "started_at",
+                    "finished_at",
+                    "stages",
+                    "total_latency_ms",
+                    "total_cost_usd",
+                    "error"
+                ],
+                "title": "RecipeRunOut"
+            },
+            "RecipeRunRequest": {
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "title": "Clip Id"
+                    },
+                    "recipe_id": {
+                        "type": "string",
+                        "title": "Recipe Id"
+                    },
+                    "stage_adapters": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "type": "object",
+                        "title": "Stage Adapters"
+                    },
+                    "stage_configs": {
+                        "additionalProperties": {
+                            "additionalProperties": true,
+                            "type": "object"
+                        },
+                        "type": "object",
+                        "title": "Stage Configs",
+                        "default": {}
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "clip_id",
+                    "recipe_id",
+                    "stage_adapters"
+                ],
+                "title": "RecipeRunRequest"
+            },
+            "RunOut": {
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "title": "Id"
+                    },
+                    "clip_id": {
+                        "type": "string",
+                        "title": "Clip Id"
+                    },
+                    "adapter": {
+                        "type": "string",
+                        "title": "Adapter"
+                    },
+                    "config": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Config"
+                    },
+                    "started_at": {
+                        "type": "string",
+                        "title": "Started At"
+                    },
+                    "finished_at": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Finished At"
+                    },
+                    "latency_ms": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Latency Ms"
+                    },
+                    "cost_usd": {
+                        "anyOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Cost Usd"
+                    },
+                    "input_preview": {
+                        "type": "string",
+                        "title": "Input Preview"
+                    },
+                    "output_preview": {
+                        "type": "string",
+                        "title": "Output Preview"
+                    },
+                    "result": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Result"
+                    },
+                    "error": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Error"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "id",
+                    "clip_id",
+                    "adapter",
+                    "config",
+                    "started_at",
+                    "finished_at",
+                    "latency_ms",
+                    "cost_usd",
+                    "input_preview",
+                    "output_preview",
+                    "result",
+                    "error"
+                ],
+                "title": "RunOut"
+            },
+            "RunRequest": {
+                "properties": {
+                    "clip_id": {
+                        "type": "string",
+                        "title": "Clip Id"
+                    },
+                    "adapter": {
+                        "type": "string",
+                        "title": "Adapter"
+                    },
+                    "config": {
+                        "additionalProperties": true,
+                        "type": "object",
+                        "title": "Config",
+                        "default": {}
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "clip_id",
+                    "adapter"
+                ],
+                "title": "RunRequest"
+            },
+            "ValidationError": {
+                "properties": {
+                    "loc": {
+                        "items": {
+                            "anyOf": [
+                                {
+                                    "type": "string"
+                                },
+                                {
+                                    "type": "integer"
+                                }
+                            ]
+                        },
+                        "type": "array",
+                        "title": "Location"
+                    },
+                    "msg": {
+                        "type": "string",
+                        "title": "Message"
+                    },
+                    "type": {
+                        "type": "string",
+                        "title": "Error Type"
+                    }
+                },
+                "type": "object",
+                "required": [
+                    "loc",
+                    "msg",
+                    "type"
+                ],
+                "title": "ValidationError"
+            }
+        }
+    }
+}

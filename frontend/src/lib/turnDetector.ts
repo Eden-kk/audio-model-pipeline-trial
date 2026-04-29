@@ -125,16 +125,23 @@ export async function startVAD(opts: StartOptions): Promise<TurnDetectorHandle> 
       // file. That's a plain HTTP fetch of a static asset (NOT a JS module
       // import), so /public/vad/ is fine for it.
       baseAssetPath: VAD_BASE_PATH,
-      // Point vad-web's embedded ORT at the actual ORT dist folder under
-      // node_modules (intercepted by the ortWasmWorkerPlugin in
-      // vite.config.ts, which serves the .mjs / .wasm files from
-      // node_modules/onnxruntime-web/dist/ regardless of the resolved
-      // pnpm path). Without this, vad-web's default onnxWASMBasePath of
-      // "./" makes the wasm fetch land on the document URL → SPA → HTML
-      // → wasm magic-word error. See loadVADLib() above for the full
-      // explanation. /vad/ doesn't work for this slot because Vite's
-      // dev server 500s on `?import` requests against /public/ files.
-      onnxWASMBasePath: '/node_modules/onnxruntime-web/dist/',
+      // Point vad-web's embedded ORT at the directory that holds the
+      // ort-wasm-simd-threaded.mjs worker entrypoint.
+      //
+      // DEV: Vite's dev server refuses to serve /public/ files with the
+      // `?import` suffix that dynamic-import requests carry (500 error).
+      // Instead we point at /node_modules/onnxruntime-web/dist/, which
+      // the ortWasmWorkerPlugin middleware in vite.config.ts intercepts
+      // and streams from the real on-disk location.
+      //
+      // PROD: /node_modules/ doesn't exist under FastAPI's StaticFiles
+      // mount — only dist/ is served. The /vad/ directory (copied from
+      // public/vad/ by Vite) already contains the .mjs + .wasm files,
+      // so we point there instead.  Static file fetches (no ?import
+      // suffix) work fine from /public/ in production.
+      onnxWASMBasePath: import.meta.env.DEV
+        ? '/node_modules/onnxruntime-web/dist/'
+        : '/vad/',
       model: 'v5',
       positiveSpeechThreshold: speechThreshold,
       negativeSpeechThreshold: silenceThreshold,

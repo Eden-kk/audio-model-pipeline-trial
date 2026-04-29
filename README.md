@@ -31,21 +31,24 @@ Web playground + pipeline composer + corpus builder for **audio-model evaluation
 
 ## Deployment
 
-Three paths today; pick whichever matches your hardware + your DNS / port situation. The frontend + backend code is identical across all three — only the model-server location and the public-URL story change.
+Four paths today; pick whichever matches your hardware + your DNS / port situation. The frontend + backend code is identical across all four — only the model-server location and the public-URL story change.
 
 | Path | When                                              | Public URL via | Model-server target |
 |------|---------------------------------------------------|----------------|---------------------|
-| **A. Local + Modal**                  | No AMD GPU yet, or just testing | localhost / your own tunnel  | NVIDIA L4 on Modal       |
+| **A. Local + Modal**                  | No GPU locally, or just testing | localhost / your own tunnel  | NVIDIA L4 on Modal       |
 | **B. All-on-AMD with Caddy**          | AMD-ROCm box, you own a domain  | Caddy + Let's Encrypt (open 80/443) | ROCm container in same compose |
 | **C. Cloudflare Tunnel** (recommended) | Public URL with no open ports / no domain required | `cloudflared` (free) | Modal **or** AMD (separate stack) |
+| **D. Local CUDA (native, no docker)**  | NVIDIA box (B200/H100/A100), no docker daemon access | localhost or `cloudflared` | NeMo running in a venv on the same host |
 
 The trial-app picks the model-server target via env (set in `.env`):
 
 ```bash
-MODEL_SERVER_BACKEND=modal|amd            # which target — default modal
+MODEL_SERVER_BACKEND=modal|amd|local      # which target — default modal
 MODEL_SERVER_MODAL_URL=https://...        # printed by `modal deploy`
 MODEL_SERVER_AMD_URL=http://localhost:9100  # AMD docker-compose host:port
-# Legacy single knob still works and beats both above:
+MODEL_SERVER_LOCAL_URL=http://localhost:9100  # Path D native venv
+MODEL_CACHE_DIR=/raid/...                 # weights cache for Path D
+# Legacy single knob still works and beats all the above:
 MODEL_SERVER_URL=https://...
 ```
 
@@ -136,6 +139,59 @@ curl https://audio-trial.<your-domain>/api/adapters | jq '. | length'   # ≥ 12
 
 > **No AMD GPU?** Path A or Path C-1 with `MODEL_SERVER_BACKEND=modal` works without any GPU on your local box.
 
+### Path D — Local CUDA on a NVIDIA box (native venv, no docker)
+
+Use this when you have a NVIDIA GPU host (B200 / H100 / A100) but **docker is unavailable** — e.g. your account isn't in the `docker` group and you don't have sudo. NeMo runs in a Python 3.10 venv against PyTorch's cu128 wheels (required for B200 sm_100 kernels); the trial-app and `cloudflared` run as plain processes.
+
+```bash
+# 1. Install uv (one-time, no sudo)
+curl -fsSL https://astral.sh/uv/install.sh | sh
+
+# 2. Bootstrap the model-server venv (~5 min — pulls torch+NeMo from PyPI)
+VENV_DIR=/raid/<you>/audio-stack/venv-modelserver \
+  bash model-server/bootstrap-cuda.sh
+
+# 3. Launch the model-server
+MODEL_CACHE_DIR=/raid/<you>/audio-trial-models \
+CUDA_VISIBLE_DEVICES=0 \
+  bash model-server/run-cuda.sh    # binds 0.0.0.0:9100
+
+# 4. Point the trial-app at it
+cat >> .env <<EOF
+MODEL_SERVER_BACKEND=local
+MODEL_SERVER_LOCAL_URL=http://localhost:9100
+MODEL_CACHE_DIR=/raid/<you>/audio-trial-models
+EOF
+
+# 5. Run the trial-app + frontend the same way as "Local development" below.
+#    For a public URL, layer on Path C: download cloudflared as a binary
+#    (no docker), then `cloudflared tunnel --url http://localhost:8000`.
+```
+
+`MODEL_CACHE_DIR` MUST point at a roomy mount; HF + NeMo weights are ~5–20 GB and `/home` on shared boxes is usually too small. The script defaults the venv to `/raid/yid042/audio-stack/venv-modelserver` — override `VENV_DIR` for other users.
+
+For Canary-Qwen-2.5B (gated), set `HF_TOKEN` in your environment after accepting the license at the model's HuggingFace page.
+
+#### Path D — also adds local MiniCPM-o (realtime omni)
+
+The `minicpm_o` adapter (the `realtime_omni` lane behind `/realtime` in the SPA) posts to whatever URL `MINICPM_O_REALTIME_URL` resolves to. To run MiniCPM-o-4.5 locally on the same B200:
+
+```bash
+# 1. Provision its (separate) venv — transformers 4.51 + minicpmo-utils
+#    can't share venv-modelserver's torch 2.11 + NeMo stack.
+VENV_DIR=/raid/<you>/audio-stack/venv-minicpmo \
+  bash model-server/bootstrap-minicpmo.sh
+
+# 2. Boot the full stack with MiniCPM-o on
+ENABLE_MINICPMO=1 \
+MODEL_CACHE_DIR=/raid/<you>/audio-trial-models \
+  bash deploy/run-public.sh up
+
+# 3. Open the public URL → /realtime → pick MiniCPM-o → talk
+```
+
+The orchestrator pins `model-server-cuda` (NeMo) to GPU 0, `vllm` to GPU 1, and `minicpmo` to **GPU 7** by default. Override with `MINICPMO_GPU=N`. Cold-start adds ~60 s on first run (downloads ~18 GB into `MODEL_CACHE_DIR/hf_cache`); steady-state TTFA on a text-only prompt is ~750 ms.
+
 ### Capturing live audio for the AR-glass benchmark
 
 Once the app is reachable, recording your own ground-truth corpus is one click:
@@ -201,10 +257,12 @@ backend/             FastAPI app, adapter registry (16+ adapters), runner, clip 
   ingest/auto_tag.py   audio-derived auto-tagger (SNR, LID, speech ratio, speaker count)
   data/              corpus + run history (gitignored except README)
 frontend/            Vite + React + TS — Playground / Pipelines / Run / Corpus / Settings
-model-server/        NeMo ASR host — two deploy targets:
+model-server/        NeMo ASR host — three deploy targets:
   Dockerfile           AMD ROCm image
   docker-compose.yml   one-command AMD deploy
   modal_app.py         Modal CUDA L4 wrapper
+  bootstrap-cuda.sh    native CUDA venv bootstrap (Path D, no docker)
+  run-cuda.sh          native CUDA launcher (Path D)
   model_loader.py      shared loader code
 deploy/              Cloudflare Tunnel deploy stack (Path C)
   docker-compose.cloudflared.yml   trial-app + cloudflared (ephemeral or named)

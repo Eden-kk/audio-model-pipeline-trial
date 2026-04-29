@@ -276,23 +276,28 @@ async def _pump_wearer_context(
     audio_buffer: bytearray,
     context_q: asyncio.Queue,
     *,
-    interval_s: float = 3.0,
+    interval_s: float = 6.0,
     window_s: float = 6.0,
 ) -> None:
     """Periodic pyannote_verify pass on the rolling buffer; pushes
-    'wearer just said: …' / 'stranger just said: …' lines into context_q
-    for the adapter's prompt context.
+    speaker-awareness hints into context_q for the adapter's prompt.
 
-    The heartbeat runs every `interval_s` seconds and analyses the most-
-    recent `window_s` seconds of audio. If the buffer hasn't accumulated
-    enough samples yet, we just sleep through the tick.
+    The heartbeat runs every `interval_s` seconds (default 6 s, doubled
+    from the original 3 s to halve pyannote load on the event loop) and
+    analyses the most-recent `window_s` seconds of audio.  If the buffer
+    hasn't accumulated enough samples yet, we sleep through the tick.
 
-    Also forwards a 'wearer_tag' UI event to the client so the Realtime
+    The pyannote verify call is dispatched as a background asyncio task so
+    it never blocks the request path.  Results arrive asynchronously and
+    are pushed onto context_q when ready.
+
+    Also forwards a 'WearerTag' UI event to the client so the Realtime
     page can render the wearer-overlay (green/grey for last window).
 
-    Failure mode: if the verify call errors (CPU starved, model crash,
-    …) we log + continue. Heartbeat misses are non-fatal.
+    Failure mode: if the verify call errors (CPU starved, model crash, …)
+    we log + continue.  Heartbeat misses are non-fatal.
     """
+    import os
     import struct
     import tempfile
 
@@ -301,7 +306,6 @@ async def _pump_wearer_context(
     min_bytes = int(window_s * SAMPLE_RATE * BYTES_PER_SAMPLE)
 
     def _wrap_wav(pcm_bytes: bytes) -> bytes:
-        n_samples = len(pcm_bytes) // BYTES_PER_SAMPLE
         byte_rate = SAMPLE_RATE * BYTES_PER_SAMPLE
         chunk_size = 36 + len(pcm_bytes)
         return (
@@ -310,6 +314,59 @@ async def _pump_wearer_context(
                                     16, 1, 1, SAMPLE_RATE, byte_rate, 2, 16)
             + b"data" + struct.pack("<I", len(pcm_bytes)) + pcm_bytes
         )
+
+    async def _verify_and_push(snapshot: bytes, wav_path: str) -> None:
+        """Background task: run pyannote verify on a snapshot, then push
+        the result onto context_q and send a WearerTag UI event.  Runs
+        entirely off the request critical path — the omni POST is never
+        serialised behind this call.
+        """
+        try:
+            result = await wearer_adapter.verify_segments(
+                wav_path,
+                enrolled_embedding_b64=wearer_embedding_b64,
+                config={"window_s": 1.0, "hop_s": 0.5, "threshold": 0.4},
+            )
+        except Exception as e:
+            log.debug(f"wearer heartbeat verify failed: {type(e).__name__}: {e}")
+            return
+        finally:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+
+        segments = result.get("segments") or []
+        user_count = sum(1 for s in segments if s.get("is_user"))
+        stranger_count = len(segments) - user_count
+
+        # Build the context hint — biased toward the dominant speaker.
+        # Use neutral phrasing ("speaking") rather than "just said: <X>"
+        # to avoid priming the model to echo that format in its reply.
+        if user_count > stranger_count:
+            line = f"[speaker: wearer — {user_count}/{len(segments)} segments matched in last {window_s:.0f}s]"
+        elif stranger_count > 0:
+            line = f"[speaker: other — {stranger_count}/{len(segments)} segments unmatched in last {window_s:.0f}s]"
+        else:
+            return   # silence — don't spam the prompt
+
+        # Best-effort push (drops if full)
+        try:
+            context_q.put_nowait(line)
+        except asyncio.QueueFull:
+            pass
+
+        # UI-side event for the wearer overlay
+        try:
+            await client_ws.send_json({
+                "event": "WearerTag",
+                "user_segments": user_count,
+                "stranger_segments": stranger_count,
+                "n_segments": len(segments),
+                "window_s": window_s,
+            })
+        except Exception:
+            pass   # client disconnected — main loop will cancel us shortly
 
     while True:
         try:
@@ -320,57 +377,25 @@ async def _pump_wearer_context(
         if len(audio_buffer) < min_bytes:
             continue
 
-        # Snapshot the most-recent window_s of audio.
+        # Snapshot the most-recent window_s of audio and write it to a
+        # temp WAV.  The actual verify call runs in a background task so
+        # the heartbeat loop returns immediately and never delays an omni
+        # request that may be in-flight concurrently.
         snapshot = bytes(audio_buffer[-min_bytes:])
-
-        # pyannote needs a path. Drop the snapshot to a temp WAV.
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         try:
             tmp.write(_wrap_wav(snapshot))
             tmp.close()
+        except Exception as e:
+            log.debug(f"wearer heartbeat WAV write failed: {type(e).__name__}: {e}")
             try:
-                result = await wearer_adapter.verify_segments(
-                    tmp.name,
-                    enrolled_embedding_b64=wearer_embedding_b64,
-                    config={"window_s": 1.0, "hop_s": 0.5, "threshold": 0.4},
-                )
-            except Exception as e:
-                log.debug(f"wearer heartbeat verify failed: {type(e).__name__}: {e}")
-                continue
-
-            segments = result.get("segments") or []
-            user_count = sum(1 for s in segments if s.get("is_user"))
-            stranger_count = len(segments) - user_count
-
-            # Build the context line — biased toward the dominant speaker.
-            if user_count > stranger_count:
-                line = f"wearer just said something (window {window_s:.0f}s, {user_count}/{len(segments)} segments matched)."
-            elif stranger_count > 0:
-                line = f"stranger just said something (window {window_s:.0f}s, {stranger_count}/{len(segments)} segments unmatched)."
-            else:
-                continue   # silence — don't spam the prompt
-
-            # Best-effort push (drops if full)
-            try:
-                context_q.put_nowait(line)
-            except asyncio.QueueFull:
-                pass
-
-            # UI-side event for the wearer overlay
-            try:
-                await client_ws.send_json({
-                    "event": "WearerTag",
-                    "user_segments": user_count,
-                    "stranger_segments": stranger_count,
-                    "n_segments": len(segments),
-                    "window_s": window_s,
-                })
-            except Exception:
-                # Client likely disconnected; the main loop will tear us down.
-                break
-        finally:
-            try:
-                import os
                 os.unlink(tmp.name)
             except OSError:
                 pass
+            continue
+
+        # Fire-and-forget — do NOT await here.
+        asyncio.create_task(
+            _verify_and_push(snapshot, tmp.name),
+            name="omni-wearer-verify",
+        )
