@@ -598,7 +598,14 @@ async def get_settings():
         "SPEECHMATICS_API_KEY", "GROQ_API_KEY", "CARTESIA_API_KEY",
         "ELEVENLABS_API_KEY", "OPENAI_API_KEY", "HF_TOKEN",
     ]
-    urls = ["INTENT_LLM_URL", "MODEL_SERVER_URL", "PUBLIC_ORIGIN", "DATA_DIR"]
+    urls = [
+        "INTENT_LLM_URL", "MODEL_SERVER_URL", "PUBLIC_ORIGIN", "DATA_DIR",
+        # Slice O5 — realtime omni endpoints
+        "MINICPM_O_REALTIME_URL", "GEMINI_VERTEX_PROJECT", "GEMINI_VERTEX_LOCATION",
+    ]
+    # Realtime-omni keys/credentials (Slice O5). GEMINI_API_KEY is parked
+    # behind Slice O4 — show as unset/parked until we wire that adapter.
+    keys = list(keys) + ["GEMINI_API_KEY"]
     api_keys: Dict[str, str] = {}
     for k in keys:
         v = os.environ.get(k, "")
@@ -613,6 +620,12 @@ async def get_settings():
         url_status[k] = {"value": v if v else None,
                          "configured": bool(v) and not v.startswith("your_")}
 
+    # Vertex AI ADC: green if both the credentials file env var is set AND
+    # that file actually exists on disk. The Settings page renders this
+    # alongside the project + location for the operator to spot-check.
+    adc_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    adc_ok = bool(adc_path) and Path(adc_path).expanduser().exists()
+
     return {
         "api_keys": api_keys,
         "service_urls": url_status,
@@ -621,6 +634,23 @@ async def get_settings():
             "default_model": os.environ.get(
                 "INTENT_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct"),
             "key_configured": bool(os.environ.get("INTENT_LLM_KEY")),
+        },
+        "realtime_omni": {
+            "minicpm_o": {
+                "url_configured": bool(os.environ.get("MINICPM_O_REALTIME_URL")),
+                "url": os.environ.get("MINICPM_O_REALTIME_URL", ""),
+            },
+            "gemini_live": {
+                # Parked behind Slice O4; surfaced so the user knows what's missing.
+                "vertex_adc_configured": adc_ok,
+                "vertex_project": os.environ.get("GEMINI_VERTEX_PROJECT", ""),
+                "vertex_location": os.environ.get("GEMINI_VERTEX_LOCATION", ""),
+                "api_key_configured": bool(os.environ.get("GEMINI_API_KEY")),
+                "status_note": (
+                    "Vertex Live preview-gated for project " + (os.environ.get("GEMINI_VERTEX_PROJECT") or "?")
+                    + "; using Gen Language API + GEMINI_API_KEY when set (Slice O4)."
+                ),
+            },
         },
     }
 
