@@ -42,6 +42,13 @@ MODEL_SERVER_PORT="${MODEL_SERVER_PORT:-9100}"
 VLLM_PORT="${VLLM_PORT:-8001}"
 TRIAL_APP_PORT="${TRIAL_APP_PORT:-8000}"
 
+# MiniCPM-o realtime omni (optional; opt-in via ENABLE_MINICPMO=1).
+# Default OFF so a fresh clone on a smaller box doesn't OOM. On the B200
+# dev host, set ENABLE_MINICPMO=1 in your local .env (or shell rc).
+ENABLE_MINICPMO="${ENABLE_MINICPMO:-0}"
+MINICPMO_PORT="${MINICPMO_PORT:-9101}"
+MINICPMO_GPU="${MINICPMO_GPU:-7}"
+
 mkdir -p "$LOG_DIR" "$RUN_DIR"
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -66,7 +73,9 @@ start_bg() {
 }
 
 stop_all() {
-  for name in cloudflared trial-app vllm model-server; do
+  # Order: kill outward-facing pieces first (cloudflared, trial-app) so
+  # the heavy GPU processes don't see ECONNRESET storms while shutting down.
+  for name in cloudflared trial-app minicpmo vllm model-server; do
     local pidfile="$RUN_DIR/$name.pid"
     if is_alive "$pidfile"; then
       local pid; pid=$(cat "$pidfile")
@@ -85,7 +94,7 @@ case "${1:-up}" in
     exit 0
     ;;
   status)
-    for name in model-server vllm trial-app cloudflared; do
+    for name in model-server vllm minicpmo trial-app cloudflared; do
       if is_alive "$RUN_DIR/$name.pid"; then
         echo "  $name: alive (pid $(cat "$RUN_DIR/$name.pid"))"
       else
@@ -146,6 +155,20 @@ start_bg vllm env \
   VLLM_PORT="$VLLM_PORT" \
   bash "$REPO_ROOT/model-server/run-vllm.sh"
 
+# ─── Component 2.5: MiniCPM-o realtime omni (opt-in) ───────────────────────
+# Off by default so contributors on smaller boxes don't auto-OOM. Enable
+# via ENABLE_MINICPMO=1 in your local .env. Cold-start ≈ 60–120s on first
+# run (downloads ~18 GB into $MODEL_CACHE_DIR/hf_cache), 30–40s thereafter.
+
+if [[ "$ENABLE_MINICPMO" == "1" ]]; then
+  start_bg minicpmo env \
+    MODEL_CACHE_DIR="$MODEL_CACHE_DIR" \
+    HF_TOKEN="${HF_TOKEN:-}" \
+    CUDA_VISIBLE_DEVICES="$MINICPMO_GPU" \
+    MINICPMO_PORT="$MINICPMO_PORT" \
+    bash "$REPO_ROOT/model-server/run-minicpmo.sh"
+fi
+
 # ─── Component 3: trial-app FastAPI ────────────────────────────────────────
 
 TRIAL_APP_VENV="$AUDIO_STACK_DIR/venv-trialapp"
@@ -156,11 +179,21 @@ if [[ ! -x "$TRIAL_APP_VENV/bin/uvicorn" ]]; then
   exit 2
 fi
 
+# If MiniCPM-o is enabled, point the trial-app's adapter at our local
+# upstream; otherwise leave the env var empty so the adapter reports
+# "unset" in /api/settings instead of hammering a dead host.
+if [[ "$ENABLE_MINICPMO" == "1" ]]; then
+  MINICPM_O_REALTIME_URL_VAL="http://localhost:$MINICPMO_PORT"
+else
+  MINICPM_O_REALTIME_URL_VAL="${MINICPM_O_REALTIME_URL:-}"
+fi
+
 start_bg trial-app env \
   MODEL_SERVER_BACKEND=local \
   MODEL_SERVER_LOCAL_URL="http://localhost:$MODEL_SERVER_PORT" \
   INTENT_LLM_URL="http://localhost:$VLLM_PORT/v1" \
   INTENT_LLM_MODEL="${INTENT_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}" \
+  MINICPM_O_REALTIME_URL="$MINICPM_O_REALTIME_URL_VAL" \
   HF_TOKEN="${HF_TOKEN:-}" \
   FRONTEND_DIST="$REPO_ROOT/frontend/dist" \
   DATA_DIR="${DATA_DIR:-$REPO_ROOT/backend/data}" \
@@ -180,8 +213,12 @@ fi
 
 # --protocol http2 forces HTTP/2 over TCP (port 443) instead of QUIC (UDP 7844).
 # UCSD egress and many corporate networks block outbound UDP 7844.
+# --edge-ip-version 4 avoids IPv6 timeouts on hosts where v6 routes to
+# Cloudflare's edge are flaky (we hit "api.trycloudflare.com context
+# deadline exceeded" otherwise).
 start_bg cloudflared "$CLOUDFLARED" tunnel --no-autoupdate \
   --protocol http2 \
+  --edge-ip-version 4 \
   --url "http://localhost:$TRIAL_APP_PORT"
 
 echo
