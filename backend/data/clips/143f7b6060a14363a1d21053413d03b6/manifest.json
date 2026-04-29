@@ -1,0 +1,33 @@
+{
+  "id": "143f7b6060a14363a1d21053413d03b6",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "sceneA_00_BAB.wav",
+  "original_format": "wav",
+  "duration_s": 7.5,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 34.0,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librispeech",
+    "pattern-BAB"
+  ],
+  "scenarios": [
+    "scenario-multi-speaker",
+    "multi-speaker",
+    "librispeech",
+    "real-human-speech",
+    "lang-en",
+    "snr-clean",
+    "partial-speech",
+    "medium",
+    "single-speaker",
+    "quiet-office"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:02:23.968532Z"
+}

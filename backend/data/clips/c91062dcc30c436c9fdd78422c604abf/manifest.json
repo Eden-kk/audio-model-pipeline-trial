@@ -1,0 +1,33 @@
+{
+  "id": "c91062dcc30c436c9fdd78422c604abf",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "q02.wav",
+  "original_format": "wav",
+  "duration_s": 2.8328125,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 23.6,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "kokoro-tts",
+    "ar-glass-style"
+  ],
+  "scenarios": [
+    "realtime-prompts",
+    "clean-en",
+    "assistant-query",
+    "tts-synth",
+    "lang-en",
+    "snr-clean",
+    "mostly-speech",
+    "short",
+    "single-speaker",
+    "indoor-cafe"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:34.197462Z"
+}

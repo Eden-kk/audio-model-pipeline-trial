@@ -1,0 +1,32 @@
+{
+  "id": "78ad459969b84e4c889e8819eb022ec9",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "pub_fr_01.wav",
+  "original_format": "wav",
+  "duration_s": 19.86,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "fr",
+  "snr_db": 44.0,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librivox-public",
+    "language-fr"
+  ],
+  "scenarios": [
+    "multilingual",
+    "lang-fr",
+    "real-human-speech",
+    "public-domain",
+    "snr-clean",
+    "partial-speech",
+    "long-form",
+    "single-speaker",
+    "quiet-office"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:54.652119Z"
+}

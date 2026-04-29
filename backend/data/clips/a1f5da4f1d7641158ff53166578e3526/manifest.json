@@ -1,0 +1,31 @@
+{
+  "id": "a1f5da4f1d7641158ff53166578e3526",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "sceneA_01_ABABA.wav",
+  "original_format": "wav",
+  "duration_s": 12.5,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 33.0,
+  "speaker_count_estimate": 2,
+  "user_tags": [
+    "librispeech",
+    "pattern-ABABA"
+  ],
+  "scenarios": [
+    "scenario-multi-speaker",
+    "multi-speaker",
+    "librispeech",
+    "real-human-speech",
+    "lang-en",
+    "snr-clean",
+    "mostly-speech",
+    "medium"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:02:25.241995Z"
+}

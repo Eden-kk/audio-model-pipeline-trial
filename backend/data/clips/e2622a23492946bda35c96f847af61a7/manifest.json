@@ -1,0 +1,35 @@
+{
+  "id": "e2622a23492946bda35c96f847af61a7",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "84_same_00_snr0.wav",
+  "original_format": "wav",
+  "duration_s": 6.8,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 13.1,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librispeech-84",
+    "musan-noise",
+    "worst-case"
+  ],
+  "scenarios": [
+    "verification-noise-0db",
+    "noisy-0db",
+    "librispeech",
+    "real-human-speech",
+    "verification-positive",
+    "lang-en",
+    "snr-mid",
+    "partial-speech",
+    "medium",
+    "single-speaker",
+    "noisy-restaurant"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:02:18.897075Z"
+}

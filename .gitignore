@@ -50,3 +50,7 @@ logs/
 !backend/data/
 backend/data/*
 !backend/data/README.md
+# Track the clip corpus so it can be cloned on other machines for testing.
+# enrollments/, runs/, and the slow-loop outbox stay excluded.
+!backend/data/clips/
+!backend/data/clips/**

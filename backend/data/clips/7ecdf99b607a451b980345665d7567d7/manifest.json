@@ -1,0 +1,33 @@
+{
+  "id": "7ecdf99b607a451b980345665d7567d7",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "2035_same_00_snr5.wav",
+  "original_format": "wav",
+  "duration_s": 5.84,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 31.4,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librispeech-2035",
+    "musan-noise"
+  ],
+  "scenarios": [
+    "verification-noise-5db",
+    "noisy-5db",
+    "librispeech",
+    "real-human-speech",
+    "verification-positive",
+    "lang-en",
+    "snr-clean",
+    "partial-speech",
+    "medium",
+    "single-speaker"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:02:08.653418Z"
+}

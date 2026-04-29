@@ -1,0 +1,33 @@
+{
+  "id": "3445d456096049caa84516a33a14e5f0",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "test_04_casual_weather.wav",
+  "original_format": "wav",
+  "duration_s": 16.116,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 102.5,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "kokoro-tts",
+    "casual"
+  ],
+  "scenarios": [
+    "english-utterances",
+    "clean-en",
+    "assistant-query",
+    "tts-synth",
+    "lang-en",
+    "snr-clean",
+    "partial-speech",
+    "long-form",
+    "single-speaker",
+    "quiet-office"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:47.141420Z"
+}

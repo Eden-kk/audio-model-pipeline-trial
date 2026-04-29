@@ -1,0 +1,32 @@
+{
+  "id": "72a291eac6c049e4816ce5a9e9495485",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "test_02_set_reminder.wav",
+  "original_format": "wav",
+  "duration_s": 16.74,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "en",
+  "snr_db": 103.6,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "kokoro-tts"
+  ],
+  "scenarios": [
+    "english-utterances",
+    "clean-en",
+    "assistant-query",
+    "tts-synth",
+    "lang-en",
+    "snr-clean",
+    "partial-speech",
+    "long-form",
+    "single-speaker",
+    "quiet-office"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:44.541983Z"
+}

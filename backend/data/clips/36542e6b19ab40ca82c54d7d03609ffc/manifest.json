@@ -1,0 +1,32 @@
+{
+  "id": "36542e6b19ab40ca82c54d7d03609ffc",
+  "source": "upload",
+  "modality": "audio",
+  "filename": "audio.wav",
+  "format": "wav",
+  "original_filename": "pub_ja_00.wav",
+  "original_format": "wav",
+  "duration_s": 2.1630625,
+  "sample_rate": 16000,
+  "channels": 1,
+  "language_detected": "ja",
+  "snr_db": 11.5,
+  "speaker_count_estimate": 1,
+  "user_tags": [
+    "librivox-public",
+    "language-ja"
+  ],
+  "scenarios": [
+    "multilingual",
+    "lang-ja",
+    "real-human-speech",
+    "public-domain",
+    "snr-mid",
+    "partial-speech",
+    "short",
+    "single-speaker",
+    "noisy-restaurant"
+  ],
+  "uploaded_by": "benchmark-ingest",
+  "created_at": "2026-04-28T06:01:56.089923Z"
+}
