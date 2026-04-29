@@ -1151,10 +1151,28 @@ async def ws_omni(
         await websocket.close()
         return
 
-    # v1: empty config → adapter falls back to its config_schema defaults.
-    # v1.5 will accept query params (system_prompt, generate_audio, …).
+    # Realtime defaults: spoken replies on, dialogue mode (the adapter's
+    # schema default for generate_audio is False — that's tuned for the
+    # Playground / batch API where audio rendering is opt-in. /realtime is
+    # always interactive, so flip it to True here unless the client sends
+    # an override via query params (?generate_audio=0 etc).
+    qp = websocket.query_params
+    def _qp_bool(name: str, default: bool) -> bool:
+        v = qp.get(name)
+        if v is None:
+            return default
+        return v.lower() in ("1", "true", "yes", "on")
+
     config: Dict[str, Any] = {
         "profile_id": profile_id,
+        "generate_audio": _qp_bool("generate_audio", True),
+        "max_new_tokens": int(qp.get("max_new_tokens", 256)),
+        "temperature": float(qp.get("temperature", 0.6)),
+        # Slice 2 of the realtime-fixes plan. Default OFF — when set, the
+        # MiniCPM-o adapter opens a persistent WS to /ws/omni-stream for
+        # sub-2s TTFT instead of the chunked HTTP path. Other adapters
+        # ignore the flag.
+        "realtime_streaming": _qp_bool("streaming", False),
     }
 
     # Slice O5 — load the wearer enrollment + pyannote_verify adapter so

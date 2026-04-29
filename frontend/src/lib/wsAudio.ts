@@ -79,6 +79,11 @@ interface StartOptions {
   profileId?: string
   onEvent: (ev: OmniEvent) => void
   onError?: (err: Error) => void
+  /** Slice 2 of realtime-fixes plan: when true, append `?streaming=1` so
+   *  the backend forwards realtime_streaming=true to the adapter, which
+   *  then opens a persistent WS to model-server's /ws/omni-stream. Only
+   *  the MiniCPM-o adapter currently honors this. Default false. */
+  realtimeStreaming?: boolean
 }
 
 /** Open mic, open WS to /ws/omni, wire audio playback queue.
@@ -90,6 +95,7 @@ export async function startOmniSession({
   profileId = 'wearer',
   onEvent,
   onError,
+  realtimeStreaming = false,
 }: StartOptions): Promise<OmniSessionHandle> {
   // ── 1) Mic
   let stream: MediaStream
@@ -121,7 +127,10 @@ export async function startOmniSession({
 
   // ── 3) WS open
   const wsBase = BASE.replace(/^http/, 'ws')
-  const wsUrl = `${wsBase}/ws/omni?adapter=${encodeURIComponent(adapter)}&profile_id=${encodeURIComponent(profileId)}`
+  const wsUrl =
+    `${wsBase}/ws/omni?adapter=${encodeURIComponent(adapter)}` +
+    `&profile_id=${encodeURIComponent(profileId)}` +
+    (realtimeStreaming ? '&streaming=1' : '')
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
   await new Promise<void>((resolve, reject) => {

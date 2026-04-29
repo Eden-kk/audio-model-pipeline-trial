@@ -66,6 +66,12 @@ export default function Realtime() {
   const flushAtMsRef = useRef<number>(0)
   const captionIdRef = useRef<number>(0)
 
+  // ── Slice 2 of realtime-fixes plan: opt-in WS streaming transport.
+  //    Default OFF until measured TTFT on the live B200 is verified ≤ 2 s.
+  //    When ON, the MiniCPM-o adapter opens a persistent WS to
+  //    /ws/omni-stream and uses streaming_prefill+streaming_generate.
+  const [realtimeStreaming, setRealtimeStreaming] = useState(false)
+
   // ── Slice O6.3: conversation mode + VAD state
   const [mode, setMode] = useState<ConversationMode>('no-interrupt')
   const [vadLevel, setVadLevel] = useState(0)         // 0..1 — drives VU meter
@@ -122,6 +128,7 @@ export default function Realtime() {
     try {
       const session = await startOmniSession({
         adapter: adapterId,
+        realtimeStreaming,
         onEvent: handleEvent,
         onError: (e) => {
           setError(e.message)
@@ -226,14 +233,36 @@ export default function Realtime() {
       return
     }
     if (ev.type === 'text_delta') {
-      // For now treat each text_delta as a complete response line —
-      // refactor to streaming append once a real streaming adapter (Gemini Live) lands.
-      pushCaption('response', ev.text || '')
+      // Accumulate text_delta tokens into a single in-progress response line.
+      // Each token appends to the last 'response' caption instead of creating
+      // a new line, so a streaming reply appears as one progressively-growing
+      // entry rather than N separate rows. A new line is started on each turn
+      // (the previous turn's last line has kind 'meta' — the done notice).
+      setCaptions((prev) => {
+        const lastIsResponse = prev.length > 0 && prev[prev.length - 1].kind === 'response'
+        if (lastIsResponse) {
+          const updated = [...prev]
+          updated[updated.length - 1] = {
+            ...updated[updated.length - 1],
+            text: updated[updated.length - 1].text + (ev.text || ''),
+            ts_ms: Date.now(),
+          }
+          return updated
+        }
+        return [...prev, {
+          id: ++captionIdRef.current,
+          kind: 'response' as const,
+          text: ev.text || '',
+          ts_ms: Date.now(),
+        }]
+      })
       setState('replying')
       return
     }
     if (ev.type === 'audio_b64') {
-      pushCaption('meta', `🔊 received audio chunk (${(ev.data || '').length} b64 bytes)`)
+      // Playback is owned by wsAudio.ts::playPcmBytes (the WS message
+      // handler in startOmniSession). Do NOT also play here — that was
+      // the cause of the dual-voice bug.
       return
     }
     if (ev.type === 'tool_call') {
@@ -350,6 +379,33 @@ export default function Realtime() {
               <option key={a.id} value={a.id}>{a.display_name}</option>
             ))}
           </select>
+        </div>
+
+        {/* Slice 2 of realtime-fixes plan: experimental WS streaming
+            transport. Default off; verified ≤ 2 s TTFT before flipping
+            on. Disabled mid-session so flipping doesn't break the open
+            WebSocket. Only the MiniCPM-o adapter currently honors it. */}
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500">Transport</label>
+          <button
+            type="button"
+            onClick={() => setRealtimeStreaming((v) => !v)}
+            disabled={state !== 'idle' && state !== 'error'}
+            className={cx(
+              'px-3 py-1.5 rounded-full border transition-colors text-xs',
+              realtimeStreaming
+                ? 'bg-amber-500 text-white border-amber-500'
+                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100',
+              state !== 'idle' && state !== 'error' && 'opacity-60 cursor-not-allowed',
+            )}
+            title={
+              realtimeStreaming
+                ? 'Persistent WS to model-server (sub-2s TTFT, single-tenant). Click to disable.'
+                : 'Chunked HTTP per turn (today\'s default, ~6 s reply). Click to try realtime streaming.'
+            }
+          >
+            {realtimeStreaming ? '⚡ realtime streaming' : '⏸ chunked (default)'}
+          </button>
         </div>
 
         {/* Mode radio — auto-turn always on once session starts; only the

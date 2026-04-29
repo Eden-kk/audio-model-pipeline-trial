@@ -71,11 +71,19 @@ class MiniCPMOAdapter:
             "system_prompt": {
                 "type": "string",
                 "default": (
-                    "You are a helpful realtime voice assistant. "
-                    "Listen to the audio and respond conversationally and briefly. "
-                    "Do NOT repeat or echo what was said — generate a reply. "
+                    # MiniCPM-o-4.5's canonical audio-assistant prompt — without
+                    # the magic "<reserved_53>" voice token + the dialogue
+                    # suffix, the model falls back to ASR mode and just
+                    # transcribes the user's audio. This shape is taken from
+                    # the upstream `model.get_sys_prompt(mode='audio_assistant')`
+                    # builder in modeling_minicpmo.py.
+                    "Use the <reserved_53> voice. "
+                    "Please assist users while maintaining this voice style. "
+                    "Please answer the user's questions seriously and in a high quality. "
+                    "Please chat with the user in a highly human-like and oral style. "
+                    "You are a helpful assistant developed by ModelBest: MiniCPM-Omni. "
                     "The [context] block below (if present) tells you who is speaking; "
-                    "use it for awareness only, do not output it."
+                    "use it for awareness only — do not output it."
                 ),
                 "description": "Prepended to every utterance request.",
             },
@@ -103,6 +111,17 @@ class MiniCPMOAdapter:
                 "description": "Override the deployed Modal endpoint. Defaults to env MINICPM_O_REALTIME_URL.",
             },
             "request_timeout_s": {"type": "number", "default": 120.0},
+            "realtime_streaming": {
+                "type": "boolean", "default": False,
+                "description": (
+                    "EXPERIMENTAL. When true, the adapter opens a persistent "
+                    "WebSocket to the model-server's /ws/omni-stream and "
+                    "drives streaming_prefill + streaming_generate for "
+                    "sub-2s TTFT. Default false preserves the chunked HTTP "
+                    "path. Single-tenant on the model-server — a second "
+                    "concurrent realtime session is rejected with WS 1013."
+                ),
+            },
         },
     }
     cost_per_call_estimate_usd: Optional[float] = 0.05   # ~A100-min/turn warm
@@ -156,6 +175,24 @@ class MiniCPMOAdapter:
         request_timeout_s = float(config.get("request_timeout_s", 120.0))
         # user_instruction: None → server uses its default; "" → suppress; str → override.
         user_instruction: Optional[str] = config.get("user_instruction") or None
+
+        # Streaming-WS path (Slice 2 of the realtime-fixes plan). Opens a
+        # persistent WebSocket to /ws/omni-stream and drives streaming_prefill
+        # + streaming_generate for sub-2s TTFT. Fully orthogonal to the
+        # chunked HTTP path below — when realtime_streaming=False we fall
+        # straight through to the existing per-flush HTTP code. When True,
+        # we delegate to a helper and return.
+        if bool(config.get("realtime_streaming", False)):
+            async for ev in self._omni_session_streaming(
+                media_iter,
+                url=url,
+                system_prompt=system_prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                abort_event=abort_event,
+            ):
+                yield ev
+            return
         # Default to streaming endpoint; flip to False to fall back to the
         # blocking /v1/omni path when needed (e.g. for diagnosing whether
         # the streaming endpoint introduced a regression).
@@ -303,11 +340,20 @@ class MiniCPMOAdapter:
                         raise
 
                     # Successful (or aborted) stream completion. Update
-                    # history with the aggregated assistant text.
+                    # history with BOTH the user placeholder AND the assistant
+                    # reply so MiniCPM-o always sees alternating user/assistant
+                    # turns. Sending assistant-first history (no user turn)
+                    # confuses the model and re-triggers echo on turn 2+.
+                    # We can't replay the raw audio bytes into history (too
+                    # heavy for HTTP), so the user turn is a text stub. The
+                    # server's _build_msgs appends history before the new user
+                    # turn, so the sequence becomes:
+                    #   [system, user_1_stub, asst_1, user_2_audio+instruction]
                     if aggregated_text:
+                        history.append({"role": "user", "content": ["[audio]"]})
                         history.append({"role": "assistant", "content": [aggregated_text]})
-                        if len(history) > 12:
-                            history = history[-12:]
+                        if len(history) > 20:
+                            history = history[-20:]
                     if abort_event is not None:
                         abort_event.clear()    # ready for next utterance
 
@@ -343,10 +389,136 @@ class MiniCPMOAdapter:
                 if audio_b64_out:
                     yield {"type": "audio_b64", "data": audio_b64_out,
                            "sample_rate": sample_rate}
-                history.append({"role": "assistant", "content": [text]})
-                if len(history) > 12:
-                    history = history[-12:]
+                if text:
+                    history.append({"role": "user", "content": ["[audio]"]})
+                    history.append({"role": "assistant", "content": [text]})
+                    if len(history) > 20:
+                        history = history[-20:]
                 latency_ms = float(data.get("latency_ms", (time.perf_counter() - t0) * 1000.0))
                 yield {"type": "done",
                        "latency_ms": latency_ms,
                        "cost_usd": self.cost_per_call_estimate_usd or 0.0}
+
+    async def _omni_session_streaming(
+        self,
+        media_iter: AsyncIterator[Dict[str, Any]],
+        *,
+        url: str,
+        system_prompt: str,
+        max_new_tokens: int,
+        temperature: float,
+        abort_event: "Optional[asyncio.Event]" = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """WS path: pump audio frames straight to /ws/omni-stream and yield
+        the upstream NDJSON events back. See the realtime-fixes plan for
+        the contract."""
+        import asyncio    # noqa: WPS433
+        import json as _json
+
+        try:
+            import websockets   # noqa: WPS433
+        except ImportError:
+            yield {"type": "done",
+                   "error": "websockets package not installed; "
+                            "set realtime_streaming=False or pip install websockets",
+                   "latency_ms": 0.0, "cost_usd": 0.0}
+            return
+
+        # http(s)://host:port → ws(s)://host:port/ws/omni-stream
+        ws_url = url.replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
+        ws_url = f"{ws_url}/ws/omni-stream"
+
+        # Bridge: events from the upstream WS receiver task → the
+        # async-generator's yield.
+        events_q: asyncio.Queue = asyncio.Queue()
+        SENTINEL = object()
+
+        async def _pump_upstream(ws):
+            try:
+                async for raw in ws:
+                    if isinstance(raw, (bytes, bytearray)):
+                        # Server should not be sending binary — ignore.
+                        continue
+                    try:
+                        ev = _json.loads(raw)
+                    except _json.JSONDecodeError:
+                        continue
+                    await events_q.put(ev)
+            finally:
+                await events_q.put(SENTINEL)
+
+        try:
+            async with websockets.connect(ws_url, max_size=None) as ws_upstream:
+                # Send the start frame BEFORE any audio, so the server
+                # captures the system prompt for its first prefill call.
+                await ws_upstream.send(_json.dumps({
+                    "event": "start",
+                    "system_prompt": system_prompt,
+                }))
+
+                recv_task = asyncio.create_task(_pump_upstream(ws_upstream))
+
+                async def _send_frames():
+                    async for frame in media_iter:
+                        if frame is None:
+                            break
+                        ftype = frame.get("type")
+                        if ftype == "audio":
+                            payload = frame.get("payload") or b""
+                            if payload:
+                                await ws_upstream.send(payload)
+                        elif ftype == "flush":
+                            await ws_upstream.send(_json.dumps({
+                                "event": "flush",
+                                "max_new_tokens": max_new_tokens,
+                                "temperature": temperature,
+                            }))
+                        elif ftype == "interrupt":
+                            await ws_upstream.send(_json.dumps({"event": "interrupt"}))
+                        elif ftype == "video":
+                            # Streaming WS path doesn't carry video yet —
+                            # ignore. (modeling_minicpmo's streaming_prefill
+                            # accepts images but plumbing is left for v1.5.)
+                            continue
+                    # media_iter exhausted (browser closed, etc).
+                    try:
+                        await ws_upstream.send(_json.dumps({"event": "close"}))
+                    except Exception:
+                        pass
+
+                send_task = asyncio.create_task(_send_frames())
+
+                # Also bridge abort_event from the proxy → upstream interrupt.
+                async def _watch_abort():
+                    if abort_event is None:
+                        return
+                    while True:
+                        await abort_event.wait()
+                        try:
+                            await ws_upstream.send(_json.dumps({"event": "interrupt"}))
+                        except Exception:
+                            return
+                        # Don't loop tighter than once per "set" — clear
+                        # and wait for the next set.
+                        abort_event.clear()
+                abort_task = asyncio.create_task(_watch_abort())
+
+                try:
+                    while True:
+                        ev = await events_q.get()
+                        if ev is SENTINEL:
+                            break
+                        yield ev
+                        if send_task.done() and send_task.exception() is not None:
+                            break
+                finally:
+                    send_task.cancel()
+                    abort_task.cancel()
+                    await asyncio.gather(
+                        send_task, recv_task, abort_task,
+                        return_exceptions=True,
+                    )
+        except Exception as e:
+            yield {"type": "done",
+                   "error": f"streaming WS failed: {type(e).__name__}: {e}",
+                   "latency_ms": 0.0, "cost_usd": 0.0}
