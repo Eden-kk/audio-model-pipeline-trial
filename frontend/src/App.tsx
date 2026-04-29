@@ -3,6 +3,7 @@ import Sidebar from './components/Sidebar'
 import Playground from './pages/Playground'
 import Pipelines from './pages/Pipelines'
 import Run from './pages/Run'
+import Realtime from './pages/Realtime'
 import Corpus from './pages/Corpus'
 import Settings from './pages/Settings'
 
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="/playground" element={<Playground />} />
             <Route path="/pipelines" element={<Pipelines />} />
             <Route path="/run" element={<Run />} />
+            <Route path="/realtime" element={<Realtime />} />
             <Route path="/corpus" element={<Corpus />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
