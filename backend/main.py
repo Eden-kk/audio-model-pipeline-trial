@@ -1077,6 +1077,87 @@ async def _save_streamed_clip(
     return clip_id
 
 
+@app.websocket("/ws/omni")
+async def ws_omni(
+    websocket: WebSocket,
+    adapter: str,
+    profile_id: str = "wearer",
+):
+    """Bidirectional realtime omni session.
+
+    Client side (browser): tagged binary frames over a WS — see
+    `realtime.omni_proxy` for the protocol. Server side: routes through
+    the named adapter's `omni_session()` async generator.
+
+    `profile_id` is reserved for the Slice O5 wearer-tag heartbeat — v1
+    accepts it but doesn't yet use it (the heartbeat coroutine isn't
+    wired in this slice).
+    """
+    from realtime.omni_proxy import proxy_omni_session   # local import
+
+    await websocket.accept()
+    try:
+        adapter_obj = registry.get(adapter)
+    except KeyError:
+        await websocket.send_json({
+            "event": "OmniError",
+            "error": f"Adapter {adapter!r} not registered",
+        })
+        await websocket.close()
+        return
+
+    if getattr(adapter_obj, "category", None) != "realtime_omni":
+        await websocket.send_json({
+            "event": "OmniError",
+            "error": (
+                f"Adapter {adapter!r} category is "
+                f"{getattr(adapter_obj, 'category', '?')!r}; need 'realtime_omni'"
+            ),
+        })
+        await websocket.close()
+        return
+
+    # v1: empty config → adapter falls back to its config_schema defaults.
+    # v1.5 will accept query params (system_prompt, generate_audio, …).
+    config: Dict[str, Any] = {
+        "profile_id": profile_id,
+    }
+
+    # Slice O5 — load the wearer enrollment + pyannote_verify adapter so
+    # the proxy can spin up a wearer-tag heartbeat in parallel with the
+    # omni session. Both are best-effort: missing enrollment / adapter
+    # just disables the heartbeat, omni still runs.
+    wearer_adapter = None
+    wearer_embedding_b64 = None
+    try:
+        from pipelines.runner import _load_enrollment_record   # type: ignore
+        rec = _load_enrollment_record(profile_id)
+        if rec and rec.get("embedding_b64") and rec.get("adapter"):
+            try:
+                wearer_adapter = registry.get(rec["adapter"])
+                wearer_embedding_b64 = rec["embedding_b64"]
+            except KeyError:
+                log.info(
+                    f"/ws/omni: wearer profile uses adapter "
+                    f"{rec['adapter']!r} which isn't loaded — heartbeat disabled."
+                )
+    except Exception as e:
+        log.warning(f"/ws/omni: failed to load wearer enrollment: {e}")
+
+    try:
+        await proxy_omni_session(
+            websocket, adapter_obj, config=config,
+            wearer_adapter=wearer_adapter,
+            wearer_embedding_b64=wearer_embedding_b64,
+        )
+    except Exception as e:
+        log.warning(f"/ws/omni session crashed: {type(e).__name__}: {e}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @app.websocket("/ws/mic")
 async def ws_mic(
     websocket: WebSocket,

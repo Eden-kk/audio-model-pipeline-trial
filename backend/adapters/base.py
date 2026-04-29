@@ -20,14 +20,19 @@ PORT_TYPES = {
     "language",         # output of LID adapters: {language, confidence}
     "memory_doc",       # intent_llm output envelope
     "dispatch_status",  # dispatch sink output (ack)
+    # Realtime omni additions (Slice O2)
+    "media_stream",     # multiplexed audio + (later) JPEG frames in
+    "omni_event",       # adapter -> client: {audio_b64?, text_delta?, tool_call?, transcript?, done?}
 }
 
 ModelCategory = str
 # Known categories:
 #   "vad" | "asr" | "speaker_verify" | "diarization" | "tts" |
-#   "intent_llm" | "realtime_omni" |
-#   "lid"        — language identification (Slice 9.1)
-#   "dispatch"   — terminal sink (HaoClaw outbox / chat.send)
+#   "intent_llm" |
+#   "lid"             — language identification (Slice 9.1)
+#   "dispatch"        — terminal sink (HaoClaw outbox / chat.send)
+#   "realtime_omni"   — bidirectional audio (+video) ↔ audio+text+tool_calls
+#                       single-stage fast-loop adapter. See omni_session().
 
 
 # ─── Protocol ─────────────────────────────────────────────────────────────────
@@ -171,6 +176,50 @@ class Adapter(Protocol):
             f"{type(self).__name__} does not implement dispatch(); "
             f"check adapter.category before dispatch."
         )
+
+    # ── Realtime omni (Slice O2) ────────────────────────────────────────
+
+    async def omni_session(
+        self,
+        media_iter,          # AsyncIterator[dict]: each {"type":"audio"|"video"|"flush", "payload": bytes, "ts_ms": int}
+        *,
+        config: dict,
+        context_iter=None,   # Optional[AsyncIterator[str]]: wearer-tag heartbeat lines, etc.
+        abort_event=None,    # Optional[asyncio.Event]: when set, drop in-flight model response (interrupt support)
+    ):
+        """realtime_omni adapters: a bidirectional session.
+
+        The runner (or /ws/omni proxy) hands the adapter:
+          - `media_iter`: async iter of inbound media frames from the
+            browser. Each frame is `{type, payload, ts_ms}`.
+              type='audio'  → 16 kHz mono Int16 PCM bytes
+              type='video'  → JPEG bytes (one frame)
+              type='flush'  → end-of-utterance marker (push-to-talk release)
+          - `context_iter` (optional): async iter of plain-text lines that
+            should be appended to the system context as out-of-band signal.
+            Used by the wearer-tag heartbeat to push "wearer just said: …"
+            spans into the omni's prompt without interrupting media flow.
+          - `config`: per-stage knobs (model name override, temperature,
+            generate_audio bool, max_new_tokens, …).
+
+        Yields adapter-side events as they arrive:
+          {"type": "transcript",  "text": str, "is_final": bool}     # caption stream
+          {"type": "text_delta",  "text": str}                       # response text token(s)
+          {"type": "audio_b64",   "data": str, "sample_rate": int}   # response audio chunk
+          {"type": "tool_call",   "name": str, "args": dict}         # function-call surface
+          {"type": "done",        "latency_ms": float, "cost_usd": float}
+
+        v1 implementations may collapse this into per-utterance HTTP calls
+        (chunked-HTTP fallback) where each `flush` triggers a synchronous
+        request; later v1.5 implementations can use a real WS to the model
+        backend for sub-second TTFA.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement omni_session(); "
+            f"check adapter.category before dispatch."
+        )
+        if False:
+            yield  # type: ignore[unreachable]  (makes this an async generator)
 
     async def transcribe_stream(self, audio_path: str, config: dict):
         """ASR adapters with is_streaming=True: yield incremental partials.
