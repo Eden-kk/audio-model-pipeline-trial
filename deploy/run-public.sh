@@ -213,10 +213,13 @@ fi
 
 # --protocol http2 forces HTTP/2 over TCP (port 443) instead of QUIC (UDP 7844).
 # UCSD egress and many corporate networks block outbound UDP 7844.
-# --edge-ip-version 4 avoids IPv6 timeouts on hosts where v6 routes to
-# Cloudflare's edge are flaky (we hit "api.trycloudflare.com context
-# deadline exceeded" otherwise).
-start_bg cloudflared "$CLOUDFLARED" tunnel --no-autoupdate \
+# --edge-ip-version 4 keeps the persistent edge connection on IPv4.
+# GODEBUG=netdns=go+v4 forces the Go runtime's DNS resolver to prefer A
+# records over AAAA — the *registration* POST to api.trycloudflare.com
+# (separate from the edge connection) hits an IPv6 timeout on this host
+# without it; --edge-ip-version 4 alone doesn't cover that step.
+start_bg cloudflared env GODEBUG=netdns=go+v4 \
+  "$CLOUDFLARED" tunnel --no-autoupdate \
   --protocol http2 \
   --edge-ip-version 4 \
   --url "http://localhost:$TRIAL_APP_PORT"
