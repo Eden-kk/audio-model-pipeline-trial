@@ -604,7 +604,7 @@ export default function Playground() {
         )}
 
         {(results.length > 0 || runState === 'done') && (
-          <div className="card overflow-hidden p-0">
+          <div className="card overflow-hidden p-0 shrink-0">
             <div className="px-5 py-3 border-b border-gray-200 flex items-center gap-3 bg-gray-50">
               <span className="text-sm font-semibold text-gray-700">Transcript</span>
               {primaryResult?.latency_ms != null && (
