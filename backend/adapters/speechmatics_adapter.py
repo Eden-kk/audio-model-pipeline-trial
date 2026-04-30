@@ -40,6 +40,9 @@ class SpeechmaticsAdapter:
     cost_per_call_estimate_usd: Optional[float] = None
     is_streaming = True   # via chunked pseudo-stream
     supported_languages: List[str] = ["en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ar", "ru"]
+    # speechmatics supports language-switching within a session on some
+    # language packs (Enhanced operating point).
+    multilang_realtime = True
 
     async def transcribe_stream(self, audio_path: str, config: dict):
         from ._pseudo_stream import pseudo_stream_chunks

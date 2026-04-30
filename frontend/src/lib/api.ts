@@ -42,6 +42,10 @@ export interface Adapter {
   supported_languages?: string[]
   /** Derived: supported_languages.length > 1. */
   multilang?: boolean
+  /** True if the adapter can detect language switches MID-STREAM within a
+   *  single session (e.g. gladia auto, faster_whisper large-v3 auto,
+   *  speechmatics enhanced). False means language is fixed at session start. */
+  multilang_realtime?: boolean
 }
 
 export interface Clip {

@@ -282,6 +282,7 @@ class Registry:
                 "is_streaming": bool(getattr(a, "is_streaming", False)),
                 "supported_languages": _langs,
                 "multilang": len(_langs) > 1,
+                "multilang_realtime": bool(getattr(a, "multilang_realtime", False)),
             })
         return out
 

@@ -38,6 +38,8 @@ class GladiaAdapter:
     cost_per_call_estimate_usd: Optional[float] = None  # Gladia ~$0.005/min
     is_streaming = True   # via chunked pseudo-stream
     supported_languages: List[str] = ["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ar", "ru"]
+    # gladia auto mode detects language switches within a single session.
+    multilang_realtime = True
 
     async def transcribe_stream(self, audio_path: str, config: dict):
         from ._pseudo_stream import pseudo_stream_chunks

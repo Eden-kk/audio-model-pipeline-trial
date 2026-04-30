@@ -39,6 +39,8 @@ class GroqWhisperAdapter:
     cost_per_call_estimate_usd: Optional[float] = None
     is_streaming = True   # via chunked pseudo-stream (Groq has no native streaming endpoint)
     supported_languages: List[str] = ["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ar", "ru"]
+    # pseudo-stream; language selected at call time only.
+    multilang_realtime = False
 
     async def transcribe_stream(self, audio_path: str, config: dict):
         from ._pseudo_stream import pseudo_stream_chunks

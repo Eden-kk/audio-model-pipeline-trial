@@ -34,6 +34,9 @@ class AssemblyAIAdapter:
     vendor = "AssemblyAI"
     is_streaming = True   # transcribe_stream() implemented via Universal-Streaming v3
     supported_languages: List[str] = ["auto", "en"]
+    # streaming_model is chosen at session start (english vs multilingual);
+    # no mid-stream language detection.
+    multilang_realtime = False
 
     inputs: List[Dict[str, str]] = [{"name": "audio", "type": "audio_file"}]
     outputs: List[Dict[str, str]] = [

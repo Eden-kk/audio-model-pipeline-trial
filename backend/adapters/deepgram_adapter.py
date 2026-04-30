@@ -40,6 +40,9 @@ class DeepgramAdapter:
     vendor = "Deepgram"
     is_streaming = True   # transcribe_stream() implemented via WSS
     supported_languages: List[str] = ["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ar", "ru"]
+    # deepgram's language=multi is gated/limited and does not perform
+    # mid-stream language switching reliably; treat as single-lang-at-start.
+    multilang_realtime = False
 
     inputs: List[Dict[str, str]] = [
         {"name": "audio", "type": "audio_file"},

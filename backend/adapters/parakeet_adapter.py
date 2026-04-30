@@ -27,6 +27,7 @@ class ParakeetAdapter:
     supported_languages: List[str] = ["en"]
     # Pseudo-stream by chunking — Parakeet is batch-only on the server.
     is_streaming = True
+    multilang_realtime = False  # EN-only model
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         return await transcribe_via_model_server(

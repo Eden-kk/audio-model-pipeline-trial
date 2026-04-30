@@ -121,6 +121,9 @@ class FasterWhisperAdapter:
     # so we can yield partials per decoded segment rather than chunking
     # the audio. See transcribe_stream() below.
     is_streaming = True
+    # large-v3/turbo with language=auto re-detects per segment, enabling
+    # mid-stream language switches (whisper-large multilingual behaviour).
+    multilang_realtime = True
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         model_name = config.get("model_name", DEFAULT_MODEL_NAME)
