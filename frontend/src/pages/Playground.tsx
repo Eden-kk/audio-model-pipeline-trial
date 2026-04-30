@@ -17,6 +17,7 @@ import {
 } from '../lib/api'
 import { cx } from '../lib/cx'
 import { formatLanguage } from '../lib/lang'
+import LangSupportBadge, { langSupport } from '../components/LangSupportBadge'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,6 +147,17 @@ export default function Playground() {
       (fromClip && langs.includes(fromClip)) ? fromClip : (langs[0] ?? '')
     )
   }, [selectedAdapter, adapters, preselectedClip?.language_detected, preselectedClip?.id])
+
+  // Mic-stream picker default — pick "auto" when supported (realtime
+  // adapters), otherwise the first valid code so the <select> value
+  // always matches an actual <option> the adapter accepts.
+  useEffect(() => {
+    const adapter = adapters.find(a => a.id === selectedAdapter)
+    if (!adapter) return
+    const langs = adapter.supported_languages ?? []
+    if (langs.length === 0) return
+    setLanguage(langs.includes('auto') ? 'auto' : langs[0])
+  }, [selectedAdapter, adapters])
 
   const handleBlob = useCallback((blob: Blob, mime: string) => {
     setPendingBlob({ blob, mime })
@@ -399,15 +411,17 @@ export default function Playground() {
                 <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200 font-mono">
                   {selectedMeta.id}
                 </span>
-                {selectedMeta.multilang && (
-                  <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    Multi-lang
-                  </span>
-                )}
+                <LangSupportBadge adapter={selectedMeta} />
               </div>
             )}
 
-            {selectedMeta && (
+            {selectedMeta && langSupport(selectedMeta) === 'single' && (
+              <p className="text-xs text-gray-400">
+                {(selectedMeta.supported_languages?.[0] ?? 'en').toUpperCase()} only
+                {' '}— no language to pick.
+              </p>
+            )}
+            {selectedMeta && langSupport(selectedMeta) !== 'single' && (
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-gray-500" htmlFor="lang-select">
                   Language
@@ -432,21 +446,17 @@ export default function Playground() {
                       : undefined
                   }
                 >
-                  <option value="auto">auto-detect</option>
-                  <option value="en">en — English</option>
-                  <option value="zh">zh — Chinese</option>
-                  <option value="es">es — Spanish</option>
-                  <option value="fr">fr — French</option>
-                  <option value="de">de — German</option>
-                  <option value="ja">ja — Japanese</option>
-                  <option value="ko">ko — Korean</option>
-                  <option value="pt">pt — Portuguese</option>
-                  <option value="hi">hi — Hindi</option>
-                  <option value="ar">ar — Arabic</option>
+                  {(selectedMeta.supported_languages ?? []).map((code) => (
+                    <option key={code} value={code}>
+                      {formatLanguage(code)}
+                    </option>
+                  ))}
                 </select>
                 {inputMode === 'mic-stream' && !micStreamActive && (
                   <p className="text-xs text-gray-400">
-                    Language is locked once the stream starts.
+                    {langSupport(selectedMeta) === 'realtime'
+                      ? 'Detects language switches mid-stream. Pick a specific code only if you want to lock to one.'
+                      : 'Locks at session start; cannot change once streaming begins.'}
                   </p>
                 )}
               </div>
@@ -651,7 +661,10 @@ export default function Playground() {
         {/* Language picker — only shown for multi-lang adapters */}
         {selectedMeta?.multilang && (
           <div className="card flex flex-col gap-4">
-            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Language</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Language</h2>
+              <LangSupportBadge adapter={selectedMeta} />
+            </div>
             <select
               value={selectedLanguage}
               onChange={(e) => setSelectedLanguage(e.target.value)}
@@ -664,6 +677,11 @@ export default function Playground() {
                 </option>
               ))}
             </select>
+            <p className="text-xs text-gray-400">
+              {langSupport(selectedMeta) === 'realtime'
+                ? 'Pick "auto" to let the model detect.'
+                : 'Locked at run start.'}
+            </p>
           </div>
         )}
 

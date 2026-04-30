@@ -13,6 +13,7 @@ import {
 import { cx } from '../lib/cx'
 import SegmentTimeline, { type Segment } from '../components/SegmentTimeline'
 import { formatLanguage } from '../lib/lang'
+import LangSupportBadge from '../components/LangSupportBadge'
 
 const CATEGORY_BADGE: Record<string, string> = {
   asr: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -133,9 +134,9 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
         </p>
       )}
 
-      {pickedAdapter?.multilang && (
-        <span className="inline-flex self-start px-2 py-0.5 rounded-full text-[11px] bg-indigo-50 text-indigo-700 border border-indigo-200 mb-2">
-          Multi-lang
+      {pickedAdapter && pickedAdapter.category === 'asr' && (
+        <span className="self-start mb-2">
+          <LangSupportBadge adapter={pickedAdapter} />
         </span>
       )}
 
