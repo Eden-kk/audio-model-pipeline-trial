@@ -33,7 +33,7 @@ function StatusPill({ ok, label, hint }: { ok: boolean; label: string; hint?: st
 export default function Settings() {
   // Wearer enrollment
   const [enrollments, setEnrollments] = useState<Enrollment[]>([])
-  const [enrollAdapter, setEnrollAdapter] = useState<string>('pyannote_verify')
+  const [enrollAdapter, setEnrollAdapter] = useState<string>('resemblyzer')
   const [enrollProfileId, setEnrollProfileId] = useState<string>('wearer')
   const [pendingBlob, setPendingBlob] = useState<{ blob: Blob; mime: string } | null>(null)
   const [enrolling, setEnrolling] = useState(false)
