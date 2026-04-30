@@ -34,7 +34,7 @@ class Canary1BFlashAdapter:
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         return await transcribe_via_model_server(
-            audio_path, model="canary-1b-flash"
+            audio_path, model="canary-1b-flash", language=config.get("language"),
         )
 
     async def transcribe_stream(self, audio_path: str, config: dict):

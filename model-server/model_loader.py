@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import types
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
 
 # ─── PyTorch / NeMo compatibility shims ─────────────────────────────────────
@@ -85,9 +85,12 @@ def _load_parakeet() -> Tuple[Any, str]:
     return model, "nvidia/parakeet-tdt-1.1b"
 
 
-def _transcribe_parakeet(model: Any, audio_path: str) -> Dict[str, Any]:
+def _transcribe_parakeet(model: Any, audio_path: str, *, language: Optional[str] = None) -> Dict[str, Any]:
     out = model.transcribe([audio_path], batch_size=1, verbose=False)
     text, words = _normalize_nemo_output(out)
+    # `language` arg accepted for uniform dispatch; ignored. The model is
+    # English-only — the response field reflects what was actually
+    # transcribed (always "en"), not the caller's `language` intent.
     return {"text": text, "words": words, "language": "en"}
 
 
@@ -102,19 +105,20 @@ def _load_canary_1b_flash() -> Tuple[Any, str]:
     return model, "nvidia/canary-1b-flash"
 
 
-def _transcribe_canary_1b_flash(model: Any, audio_path: str) -> Dict[str, Any]:
+def _transcribe_canary_1b_flash(model: Any, audio_path: str, *, language: Optional[str] = None) -> Dict[str, Any]:
     """Canary's transcribe() requires source_lang + target_lang + task + pnc."""
+    target_lang = language or "en"
     out = model.transcribe(
         [audio_path],
         batch_size=1,
-        source_lang="en",
-        target_lang="en",
+        source_lang=target_lang,
+        target_lang=target_lang,
         task="asr",
         pnc="yes",
         verbose=False,
     )
     text, words = _normalize_nemo_output(out)
-    return {"text": text, "words": words, "language": "en"}
+    return {"text": text, "words": words, "language": target_lang}
 
 
 # ─── Canary-Qwen-2.5B (EN, long-form) ────────────────────────────────────────
@@ -127,7 +131,7 @@ def _load_canary_qwen_25b() -> Tuple[Any, str]:
     return model, "nvidia/canary-qwen-2.5b"
 
 
-def _transcribe_canary_qwen_25b(model: Any, audio_path: str) -> Dict[str, Any]:
+def _transcribe_canary_qwen_25b(model: Any, audio_path: str, *, language: Optional[str] = None) -> Dict[str, Any]:
     """SALM.generate signature is:
          generate(prompts, audios=Tensor, audio_lens=Tensor, ...)
        The audio data passes as a *separate* tensor argument; the prompt
@@ -196,6 +200,9 @@ def _transcribe_canary_qwen_25b(model: Any, audio_path: str) -> Dict[str, Any]:
     except Exception as e:
         text = f"[decode error: {e}]"
 
+    # `language` arg accepted for uniform dispatch; ignored. The model is
+    # English-only — the response field reflects what was actually
+    # transcribed (always "en"), not the caller's `language` intent.
     return {"text": text, "words": [], "language": "en"}
 
 
@@ -207,7 +214,15 @@ LOADERS: Dict[str, Callable[[], Tuple[Any, str]]] = {
     "canary-qwen-2.5b": _load_canary_qwen_25b,
 }
 
-TRANSCRIBERS: Dict[str, Callable[[Any, str], Dict[str, Any]]] = {
+
+class _Transcriber(Protocol):
+    def __call__(
+        self, model: Any, audio_path: str,
+        *, language: Optional[str] = None,
+    ) -> Dict[str, Any]: ...
+
+
+TRANSCRIBERS: Dict[str, _Transcriber] = {
     "parakeet-tdt-1.1b": _transcribe_parakeet,
     "canary-1b-flash": _transcribe_canary_1b_flash,
     "canary-qwen-2.5b": _transcribe_canary_qwen_25b,
@@ -239,14 +254,14 @@ def get_or_load(model_id: str) -> Any:
         return instance
 
 
-def transcribe(model_id: str, audio_path: str) -> Dict[str, Any]:
+def transcribe(model_id: str, audio_path: str, *, language: Optional[str] = None) -> Dict[str, Any]:
     if model_id not in TRANSCRIBERS:
         raise NotImplementedError(
             f"transcriber for {model_id!r} not implemented yet"
         )
     instance = get_or_load(model_id)
     t0 = time.perf_counter()
-    out = TRANSCRIBERS[model_id](instance, audio_path)
+    out = TRANSCRIBERS[model_id](instance, audio_path, language=language)
     out["latency_ms"] = (time.perf_counter() - t0) * 1000.0
     out["model"] = model_id
     return out

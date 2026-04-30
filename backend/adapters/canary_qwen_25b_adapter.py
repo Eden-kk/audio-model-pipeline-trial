@@ -28,7 +28,7 @@ class CanaryQwen25BAdapter:
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         return await transcribe_via_model_server(
-            audio_path, model="canary-qwen-2.5b"
+            audio_path, model="canary-qwen-2.5b", language=config.get("language"),
         )
 
     async def transcribe_stream(self, audio_path: str, config: dict):

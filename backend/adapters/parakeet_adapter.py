@@ -28,7 +28,9 @@ class ParakeetAdapter:
     is_streaming = True
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
-        return await transcribe_via_model_server(audio_path, model="parakeet-tdt-1.1b")
+        return await transcribe_via_model_server(
+            audio_path, model="parakeet-tdt-1.1b", language=config.get("language"),
+        )
 
     async def transcribe_stream(self, audio_path: str, config: dict):
         from ._pseudo_stream import pseudo_stream_chunks

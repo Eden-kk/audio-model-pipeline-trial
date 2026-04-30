@@ -23,7 +23,7 @@ which target to hit via env (resolved by ``model_server_url()`` below):
                                         all of the above (handy in CI).
 
 Wire contract (model-server/server.py for AMD, modal_app.py for Modal):
-  POST {url}/v1/transcribe?model=<id>
+  POST {url}/v1/transcribe?model=<id>[&language=<bcp47>]
        multipart/form-data with `file` = audio bytes
   →   {text, words, language, duration_s, model, latency_ms}
 """
@@ -64,6 +64,7 @@ async def transcribe_via_model_server(
     audio_path: str,
     *,
     model: str,
+    language: Optional[str] = None,
     timeout_s: float = 120.0,
 ) -> dict:
     """Forward an audio file to the model-server and normalise the response.
@@ -72,13 +73,16 @@ async def transcribe_via_model_server(
     UI can render "model-server offline" rather than a generic timeout.
     """
     url = f"{model_server_url()}/v1/transcribe"
+    params: Dict[str, str] = {"model": model}
+    if language and language != "auto":
+        params["language"] = language
     t0 = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             with open(audio_path, "rb") as f:
                 resp = await client.post(
                     url,
-                    params={"model": model},
+                    params=params,
                     files={"file": (os.path.basename(audio_path), f, "audio/wav")},
                 )
     except httpx.ConnectError as e:

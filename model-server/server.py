@@ -23,6 +23,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from typing import Optional
+
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
 import model_loader
@@ -125,6 +127,7 @@ async def models():
 @app.post("/v1/transcribe")
 async def transcribe(
     model: str = Query(..., description="One of parakeet-tdt-1.1b, canary-1b-flash, canary-qwen-2.5b"),
+    language: Optional[str] = Query(None, description="BCP-47; only Canary-1B-flash uses it today."),
     file: UploadFile = File(...),
 ):
     if model not in model_loader.LOADERS:
@@ -139,7 +142,7 @@ async def transcribe(
 
     try:
         try:
-            result = model_loader.transcribe(model, tmp_path)
+            result = model_loader.transcribe(model, tmp_path, language=language)
         except NotImplementedError as e:
             # Loader/transcriber pending — surface as 503 with a useful body.
             raise HTTPException(status_code=503,
