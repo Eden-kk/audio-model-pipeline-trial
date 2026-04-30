@@ -37,6 +37,11 @@ export interface Adapter {
    *  Playground renders a typing cursor for these; batch adapters get
    *  a single-shot final transcript. */
   is_streaming?: boolean
+  /** Curated BCP-47 list the adapter accepts as config.language.
+   *  "auto" present iff the adapter supports auto-detect. */
+  supported_languages?: string[]
+  /** Derived: supported_languages.length > 1. */
+  multilang?: boolean
 }
 
 export interface Clip {

@@ -380,6 +380,11 @@ export default function Playground() {
                 <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200 font-mono">
                   {selectedMeta.id}
                 </span>
+                {selectedMeta.multilang && (
+                  <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    Multi-lang
+                  </span>
+                )}
               </div>
             )}
 

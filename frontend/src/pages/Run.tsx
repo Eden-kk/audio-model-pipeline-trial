@@ -118,6 +118,12 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
         </p>
       )}
 
+      {(adapterChoices ?? []).find((a) => a.id === adapterId)?.multilang && (
+        <span className="inline-flex self-start px-2 py-0.5 rounded-full text-[11px] bg-indigo-50 text-indigo-700 border border-indigo-200 mb-2">
+          Multi-lang
+        </span>
+      )}
+
       {warning && state !== 'done' && state !== 'error' && (
         <div
           className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2"
