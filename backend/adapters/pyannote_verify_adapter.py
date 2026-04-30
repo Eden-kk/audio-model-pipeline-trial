@@ -17,12 +17,30 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torchaudio  # noqa: F401
 
-# torchaudio >= 2.11 dropped AudioMetaData; pyannote.audio still annotates
-# with it (return-type hint on Inference.__call__'s internal helpers).
-# Shim a minimal compatible class so attribute lookup at function-def /
-# call time succeeds without downgrading torchaudio.
+# ── torchaudio compatibility shim for pyannote.audio 3.x on torchaudio ≥ 2.9 ──
+#
+# torchaudio 2.9+ migrated audio I/O to torchcodec and removed three symbols
+# that pyannote.audio 3.x still references:
+#   • torchaudio.AudioMetaData  – return-type annotation on io.py:get_torchaudio_info()
+#   • torchaudio.list_audio_backends – called in Audio.__init__ to pick a backend
+#   • torchaudio.info            – called in get_torchaudio_info() for file-path inputs
+#
+# Our adapter bypasses torchaudio audio I/O entirely (soundfile → torch tensor →
+# {"waveform", "sample_rate"} dict passed to Inference), so we never actually
+# execute those code paths at runtime.  However pyannote.audio evaluates these
+# attribute accesses at *module-import time* (type annotation + Audio.__init__
+# called from protocol.py at module level), which means they must exist before
+# `from pyannote.audio import Inference, Model` is called.
+#
+# Upstream fix: pyannote.audio 4.x rewrites I/O on top of torchcodec.  A major-
+# version upgrade is deferred because 4.x pulls in opentelemetry and pyannoteai-sdk
+# and may change embedding dimensions.  This shim is the minimum patch for 3.x.
+#
+# Invariant to enforce: all three guards use `not hasattr(torchaudio, ...)` so
+# they are no-ops if a future torchaudio re-adds the symbols.
 if not hasattr(torchaudio, "AudioMetaData"):
     class _AudioMetaDataShim:
+        """Drop-in for torchaudio.AudioMetaData (removed in torchaudio 2.9)."""
         __slots__ = ("sample_rate", "num_frames", "num_channels",
                      "bits_per_sample", "encoding")
 
@@ -36,6 +54,75 @@ if not hasattr(torchaudio, "AudioMetaData"):
             self.encoding = str(encoding)
 
     torchaudio.AudioMetaData = _AudioMetaDataShim  # type: ignore[attr-defined]
+
+if not hasattr(torchaudio, "list_audio_backends"):
+    def _list_audio_backends() -> list:
+        """Shim for torchaudio.list_audio_backends (removed in torchaudio 2.9).
+        Returns ['soundfile'] so Audio.__init__ falls back to the soundfile backend."""
+        return ["soundfile"]
+
+    torchaudio.list_audio_backends = _list_audio_backends  # type: ignore[attr-defined]
+
+if not hasattr(torchaudio, "info"):
+    def _info(path: str, backend: str = None) -> "torchaudio.AudioMetaData":
+        """Shim for torchaudio.info (removed in torchaudio 2.9) via soundfile."""
+        import soundfile as sf
+        _sf_info = sf.info(path)
+        return torchaudio.AudioMetaData(  # type: ignore[attr-defined]
+            sample_rate=_sf_info.samplerate,
+            num_frames=_sf_info.frames,
+            num_channels=_sf_info.channels,
+            bits_per_sample=0,
+            encoding="PCM_S",
+        )
+
+    torchaudio.info = _info  # type: ignore[attr-defined]
+
+# ── huggingface_hub compatibility shim for pyannote.audio 3.x on hf_hub ≥ 1.0 ──
+#
+# huggingface_hub 1.0 renamed `use_auth_token` → `token` in hf_hub_download().
+# pyannote.audio 3.x's Model.from_pretrained() still passes `use_auth_token=` to
+# hf_hub_download, which raises TypeError on newer hf_hub.
+# Wrap hf_hub_download to silently forward use_auth_token as token.
+import huggingface_hub as _hfhub
+
+_orig_hf_hub_download = _hfhub.hf_hub_download
+
+
+def _compat_hf_hub_download(*args: Any, use_auth_token: Optional[str] = None,
+                            **kwargs: Any) -> str:
+    """Shim: translate deprecated use_auth_token kwarg to token for hf_hub ≥ 1.0."""
+    if use_auth_token is not None and "token" not in kwargs:
+        kwargs["token"] = use_auth_token
+    return _orig_hf_hub_download(*args, **kwargs)
+
+
+_hfhub.hf_hub_download = _compat_hf_hub_download  # type: ignore[assignment]
+
+# ── lightning_fabric pl_load shim for torch ≥ 2.6 safe-load default change ──
+#
+# torch 2.6 changed torch.load()'s default from weights_only=None/False to True.
+# The pyannote/embedding .ckpt includes pytorch_lightning callback state (e.g.,
+# EarlyStopping) that torch.load rejects under weights_only=True.
+# lightning_fabric._load passes weights_only=None for local files, which now
+# triggers the strict default.  Since pyannote/embedding is a trusted model
+# (gated by HF_TOKEN + our own accepted license), forcing weights_only=False
+# for local .ckpt paths is safe.
+import lightning_fabric.utilities.cloud_io as _lcio
+
+_orig_pl_load = _lcio._load
+
+
+def _patched_pl_load(path_or_url: Any, map_location: Any = None,
+                     weights_only: Optional[bool] = None) -> Any:
+    """Shim: use weights_only=False for local .ckpt files (trusted pyannote checkpoint)."""
+    if weights_only is None and not str(path_or_url).startswith("http"):
+        weights_only = False
+    return _orig_pl_load(path_or_url, map_location=map_location,
+                         weights_only=weights_only)
+
+
+_lcio._load = _patched_pl_load  # type: ignore[assignment]
 
 _MODEL = "pyannote/embedding"
 _DEFAULT_THRESHOLD = 0.50
@@ -77,7 +164,9 @@ class PyannoteVerifyAdapter:
                     "then add HF_TOKEN to backend/.env."
                 )
             from pyannote.audio import Inference, Model
-            model = Model.from_pretrained(_MODEL, token=tok)
+            import pyannote.audio.core.model as _pam
+            _pam.hf_hub_download = _compat_hf_hub_download  # patch in module namespace too
+            model = Model.from_pretrained(_MODEL, use_auth_token=tok)
             self._inference = Inference(model, window="whole")
         return self._inference
 
