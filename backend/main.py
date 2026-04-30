@@ -61,9 +61,10 @@ _ADAPTERS = [
     ("adapters.whisper_lid_adapter", "WhisperLIDAdapter"),
     ("adapters.deepgram_lid_adapter", "DeepgramLIDAdapter"),
     # Realtime omni adapters (Plan C-extended-2 Slice O2). Edge candidate
-    # via Modal A100 + MiniCPM-o-4.5; Gemini Live cloud candidate parked
-    # behind Slice O4 until a GEMINI_API_KEY is available.
+    # via Modal A100 + MiniCPM-o-4.5; cloud candidate via Vertex Live
+    # 2.5-flash-native-audio (auth via ADC).
     ("adapters.minicpm_o_adapter", "MiniCPMOAdapter"),
+    ("adapters.gemini_omni_adapter", "GeminiOmniAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
