@@ -33,7 +33,11 @@ class AssemblyAIAdapter:
     hosting = "cloud"
     vendor = "AssemblyAI"
     is_streaming = True   # transcribe_stream() implemented via Universal-Streaming v3
-    supported_languages: List[str] = ["auto", "en"]
+    # AssemblyAI Universal-Streaming auto-routes between english and
+    # multilingual streaming models based on `language`. Multilingual
+    # supports a broad set; align with the Whisper-family list so
+    # users have parity choices across cloud ASR adapters.
+    supported_languages: List[str] = ["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ru"]
     # streaming_model is chosen at session start (english vs multilingual);
     # no mid-stream language detection.
     multilang_realtime = False
