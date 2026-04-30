@@ -1,9 +1,13 @@
 // ---------------------------------------------------------------------------
 // API client — typed wrapper around fetch + WebSocket
-// Base URL from VITE_API_URL (default http://localhost:8000)
+// Base URL from VITE_API_URL. Falls back to same-origin in production
+// builds so the SPA works on whatever host:port serves it (no rebuild
+// needed when the public origin changes). Dev (`vite`) keeps the
+// localhost:8000 default for the split frontend/backend workflow.
 // ---------------------------------------------------------------------------
 
-const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
+const BASE = (import.meta.env.VITE_API_URL as string | undefined)
+  ?? (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
 
 // ---------------------------------------------------------------------------
 // Shared types (mirrors backend data model)

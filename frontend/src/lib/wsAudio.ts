@@ -13,7 +13,8 @@
 // transcription pages — different protocol, different server endpoint.
 
 const TARGET_SR = 16000
-const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
+const BASE = (import.meta.env.VITE_API_URL as string | undefined)
+  ?? (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
 
 // Outbound binary frame discriminators — must match
 // backend/realtime/omni_proxy.py FRAME_AUDIO/FRAME_VIDEO/FRAME_FLUSH.

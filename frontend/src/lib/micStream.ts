@@ -9,7 +9,8 @@
 
 const TARGET_SR = 16000   // matches what /ws/mic expects
 
-const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
+const BASE = (import.meta.env.VITE_API_URL as string | undefined)
+  ?? (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
 
 export interface MicStreamEvent {
   event:
