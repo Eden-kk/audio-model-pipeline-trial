@@ -1955,8 +1955,10 @@ async def _proxy_gladia_mic(
             for t in pending:
                 t.cancel()
             for t in pending:
-                try: await t
-                except Exception: pass
+                try:
+                    await t
+                except Exception:
+                    pass
 
         full_text = " ".join(final_segments).strip()
         wall_s = time.perf_counter() - t0
@@ -1992,8 +1994,10 @@ async def _proxy_gladia_mic(
             "error": f"{type(exc).__name__}: {exc}",
         })
     finally:
-        try: await client_ws.close()
-        except Exception: pass
+        try:
+            await client_ws.close()
+        except Exception:
+            pass
 
 
 async def _proxy_speechmatics_mic(
@@ -2152,8 +2156,10 @@ async def _proxy_speechmatics_mic(
             for t in pending:
                 t.cancel()
             for t in pending:
-                try: await t
-                except Exception: pass
+                try:
+                    await t
+                except Exception:
+                    pass
 
         full_text = " ".join(final_segments).strip()
         wall_s = time.perf_counter() - t0
@@ -2189,8 +2195,10 @@ async def _proxy_speechmatics_mic(
             "error": f"{type(exc).__name__}: {exc}",
         })
     finally:
-        try: await client_ws.close()
-        except Exception: pass
+        try:
+            await client_ws.close()
+        except Exception:
+            pass
 
 
 async def _proxy_chunked_batch_mic(
