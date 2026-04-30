@@ -16,6 +16,7 @@ import {
   type RunEvent,
 } from '../lib/api'
 import { cx } from '../lib/cx'
+import { formatLanguage } from '../lib/lang'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -62,6 +63,7 @@ export default function Playground() {
   const [adapters, setAdapters] = useState<Adapter[]>([])
   const [adaptersError, setAdaptersError] = useState<string | null>(null)
   const [selectedAdapter, setSelectedAdapter] = useState<string>('')
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('')
   const [pendingBlob, setPendingBlob] = useState<{ blob: Blob; mime: string } | null>(null)
   // When the user arrives via Corpus → "Run in Playground", we deep-link
   // through `?clip=<id>` and run directly against the existing corpus row
@@ -130,6 +132,17 @@ export default function Playground() {
     }
   }, [preselectedClipId])
 
+  // Recompute language picker default when adapter or clip changes
+  useEffect(() => {
+    const adapter = adapters.find(a => a.id === selectedAdapter)
+    if (!adapter?.multilang) { setSelectedLanguage(''); return }
+    const langs = adapter.supported_languages ?? []
+    const fromClip = preselectedClip?.language_detected
+    setSelectedLanguage(
+      (fromClip && langs.includes(fromClip)) ? fromClip : (langs[0] ?? '')
+    )
+  }, [selectedAdapter, adapters, preselectedClip?.language_detected, preselectedClip?.id])
+
   const handleBlob = useCallback((blob: Blob, mime: string) => {
     setPendingBlob({ blob, mime })
     // A fresh blob takes precedence over the deep-linked clip — clear it
@@ -197,7 +210,9 @@ export default function Playground() {
     // Kick off the POST. For streaming adapters, the backend returns
     // immediately with an in-flight run_id; for batch, it waits for the
     // synchronous transcribe to finish.
-    const postPromise = startRun(clip.id, selectedAdapter).catch((err: unknown) => {
+    const cfg: Record<string, unknown> = {}
+    if (selectedLanguage) cfg.language = selectedLanguage
+    const postPromise = startRun(clip.id, selectedAdapter, cfg).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err)
       setRunError(`Run failed: ${msg}`)
       setRunState('error')
@@ -578,6 +593,25 @@ export default function Playground() {
             )}
           </div>
         </div>
+
+        {/* Language picker — only shown for multi-lang adapters */}
+        {selectedMeta?.multilang && (
+          <div className="card flex flex-col gap-4">
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Language</h2>
+            <select
+              value={selectedLanguage}
+              onChange={(e) => setSelectedLanguage(e.target.value)}
+              disabled={busy}
+              className="field w-full max-w-xs"
+            >
+              {(selectedMeta.supported_languages ?? []).map((code) => (
+                <option key={code} value={code}>
+                  {formatLanguage(code)}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {/* Run button — hidden in mic-stream mode (the stream button itself starts the run) */}
         {inputMode !== 'mic-stream' && (
