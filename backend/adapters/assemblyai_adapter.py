@@ -197,7 +197,13 @@ class AssemblyAIAdapter:
         # AssemblyAI v3 requires speech_model on the WS handshake.
         # Valid values: 'universal-streaming-english',
         #               'universal-streaming-multilingual'.
-        speech_model = config.get("streaming_model", "universal-streaming-english")
+        language = config.get("language", "en")
+        if "streaming_model" in config:
+            speech_model = config["streaming_model"]            # explicit override wins
+        elif language == "en":
+            speech_model = "universal-streaming-english"
+        else:
+            speech_model = "universal-streaming-multilingual"
         url = (f"{_STREAMING_WS}?sample_rate={sr}"
                f"&speech_model={speech_model}"
                f"&format_turns=true")
@@ -289,7 +295,7 @@ class AssemblyAIAdapter:
             "is_final": True,
             "text": full_text,
             "words": all_words,
-            "language": "en",
+            "language": config.get("language", "en"),  # Echoes the picker value; AssemblyAI's v3 streaming Turn frames don't carry per-turn language, so this can't report a server-detected language.
             "duration_s": duration_s,
             "cost_usd": cost_usd,
             "wall_time_s": wall_s,
