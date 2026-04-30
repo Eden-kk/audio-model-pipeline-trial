@@ -454,8 +454,8 @@ export default function Playground() {
                 </select>
                 {inputMode === 'mic-stream' && !micStreamActive && (
                   <p className="text-xs text-gray-400">
-                    {langSupport(selectedMeta) === 'realtime'
-                      ? 'Detects language switches mid-stream. Pick a specific code only if you want to lock to one.'
+                    {langSupport(selectedMeta) === 'auto'
+                      ? 'Pick "auto" to let the model detect, or lock to a specific code. Locked at session start either way.'
                       : 'Locks at session start; cannot change once streaming begins.'}
                   </p>
                 )}
@@ -679,7 +679,7 @@ export default function Playground() {
               ))}
             </select>
             <p className="text-xs text-gray-400">
-              {langSupport(selectedMeta) === 'realtime'
+              {langSupport(selectedMeta) === 'auto'
                 ? 'Pick "auto" to let the model detect.'
                 : 'Locked at run start.'}
             </p>
