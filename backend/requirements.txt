@@ -23,3 +23,8 @@ torchaudio
 # checkpoint loader still needs it on import. Keep it explicit so a fresh
 # venv doesn't 500 on the first /api/enroll call.
 omegaconf
+
+# Realtime omni — Gemini Live (Vertex AI). Uses ADC; no API key in env.
+# Unified SDK; supersedes google-generativeai. Provides
+# `from google import genai` + `client.aio.live.connect(...)`.
+google-genai>=0.4.0
