@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-_MODELS: Dict[Tuple[str, str, str], Any] = {}
+_MODELS: Dict[Tuple[str, str, int, str], Any] = {}
 _MODEL_LOCK = threading.Lock()
 
 # Default + supported model names (order matters in the enum below)
@@ -32,23 +32,26 @@ SUPPORTED_MODEL_NAMES = [
     "distil-large-v3",
     "large-v3-turbo-en",
 ]
-DEVICE = "cpu"          # use "cuda" or "rocm" if running on GPU
-COMPUTE_TYPE = "int8"   # quantised for CPU; switch to "float16" on GPU
+DEVICE = "cuda"           # B200 host: GPU 0 is idle (0 % util); sm_100 supported
+DEVICE_INDEX = 0          # explicit GPU index so we never land on MiniCPM-o GPU 7
+COMPUTE_TYPE = "float16"  # float16 on B200; use "int8" if falling back to cpu
 
 
 def _get_model(model_name: str, device: str = DEVICE,
-               compute_type: str = COMPUTE_TYPE):
-    """Return a WhisperModel singleton keyed by (model_name, device, compute_type)."""
-    key = (model_name, device, compute_type)
+               compute_type: str = COMPUTE_TYPE,
+               device_index: int = DEVICE_INDEX):
+    """Return a WhisperModel singleton keyed by (model_name, device, device_index, compute_type)."""
+    key = (model_name, device, device_index, compute_type)
     if key in _MODELS:
         return _MODELS[key]
     with _MODEL_LOCK:
         if key in _MODELS:
             return _MODELS[key]
         from faster_whisper import WhisperModel  # type: ignore[import]
-        _MODELS[key] = WhisperModel(
-            model_name, device=device, compute_type=compute_type
-        )
+        kwargs: Dict[str, Any] = {"device": device, "compute_type": compute_type}
+        if device in ("cuda", "rocm"):
+            kwargs["device_index"] = device_index
+        _MODELS[key] = WhisperModel(model_name, **kwargs)
     return _MODELS[key]
 
 
@@ -100,6 +103,11 @@ class FasterWhisperAdapter:
                 "enum": ["cpu", "cuda", "rocm"],
                 "description": "Inference device. Use 'rocm' on the AMD remote machine.",
             },
+            "device_index": {
+                "type": "integer",
+                "default": DEVICE_INDEX,
+                "description": "GPU index when device='cuda'. Default 0 (idle on B200).",
+            },
             "compute_type": {
                 "type": "string",
                 "default": COMPUTE_TYPE,
@@ -126,10 +134,12 @@ class FasterWhisperAdapter:
         beam_size = int(config.get("beam_size", 5))
         word_timestamps = bool(config.get("word_timestamps", True))
         device = config.get("device", DEVICE)
+        device_index = int(config.get("device_index", DEVICE_INDEX))
         compute_type = config.get("compute_type", COMPUTE_TYPE)
 
         t0 = time.perf_counter()
-        model = _get_model(model_name, device=device, compute_type=compute_type)
+        model = _get_model(model_name, device=device, compute_type=compute_type,
+                           device_index=device_index)
         segments_iter, info = model.transcribe(
             audio_path,
             language=language,
@@ -196,15 +206,20 @@ class FasterWhisperAdapter:
             )
         language_in = config.get("language", "en")
         language = None if language_in in ("auto", "", None) else language_in
-        beam_size = int(config.get("beam_size", 5))
+        # Streaming-optimised defaults: beam=1 cuts latency dramatically on GPU;
+        # condition_on_previous_text=False avoids recompute between windows;
+        # vad_filter=False skips an extra CPU-side Silero pass per chunk.
+        beam_size = int(config.get("beam_size", 1))
         word_timestamps = bool(config.get("word_timestamps", True))
         device = config.get("device", DEVICE)
+        device_index = int(config.get("device_index", DEVICE_INDEX))
         compute_type = config.get("compute_type", COMPUTE_TYPE)
 
         t0 = _time.perf_counter()
-        model = _get_model(model_name, device=device, compute_type=compute_type)
+        model = _get_model(model_name, device=device, compute_type=compute_type,
+                           device_index=device_index)
 
-        # The inference itself is sync + CPU-bound; run it in a thread so
+        # The inference itself is sync + GPU-bound; run it in a thread so
         # the event loop can keep flushing WS frames between segments.
         def _decode():
             segs, inf = model.transcribe(
@@ -212,6 +227,8 @@ class FasterWhisperAdapter:
                 language=language,
                 beam_size=beam_size,
                 word_timestamps=word_timestamps,
+                condition_on_previous_text=False,
+                vad_filter=False,
             )
             return segs, inf
 
@@ -268,7 +285,9 @@ class FasterWhisperAdapter:
             "raw_response": {
                 "model_name": model_name,
                 "device": device,
+                "device_index": device_index,
                 "compute_type": compute_type,
+                "beam_size": beam_size,
                 "language_probability": (
                     float(info.language_probability)
                     if info.language_probability else None
