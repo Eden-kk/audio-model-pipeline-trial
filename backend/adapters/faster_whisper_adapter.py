@@ -108,6 +108,7 @@ class FasterWhisperAdapter:
         },
     }
     cost_per_call_estimate_usd: Optional[float] = 0.0
+    supported_languages: List[str] = ["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ar", "ru"]
     # Native streaming: faster-whisper's segments_iter is a lazy generator
     # so we can yield partials per decoded segment rather than chunking
     # the audio. See transcribe_stream() below.

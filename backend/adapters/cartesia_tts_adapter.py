@@ -38,6 +38,7 @@ class CartesiaTTSAdapter:
         },
     }
     cost_per_call_estimate_usd: Optional[float] = None  # Cartesia ~$1/1M chars
+    supported_languages: List[str] = ["en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi"]
 
     def _key(self) -> str:
         k = os.environ.get("CARTESIA_API_KEY", "")

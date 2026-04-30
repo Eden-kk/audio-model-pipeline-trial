@@ -31,6 +31,7 @@ class Canary1BFlashAdapter:
     }
     cost_per_call_estimate_usd: Optional[float] = 0.0
     is_streaming = True   # via chunked pseudo-stream
+    supported_languages: List[str] = ["en", "de", "es", "fr"]
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         return await transcribe_via_model_server(

@@ -33,6 +33,7 @@ class AssemblyAIAdapter:
     hosting = "cloud"
     vendor = "AssemblyAI"
     is_streaming = True   # transcribe_stream() implemented via Universal-Streaming v3
+    supported_languages: List[str] = ["auto", "en"]
 
     inputs: List[Dict[str, str]] = [{"name": "audio", "type": "audio_file"}]
     outputs: List[Dict[str, str]] = [

@@ -39,6 +39,7 @@ class DeepgramAdapter:
     hosting = "cloud"
     vendor = "Deepgram"
     is_streaming = True   # transcribe_stream() implemented via WSS
+    supported_languages: List[str] = ["auto", "en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh", "hi", "ar", "ru"]
 
     inputs: List[Dict[str, str]] = [
         {"name": "audio", "type": "audio_file"},

@@ -24,6 +24,7 @@ class ParakeetAdapter:
     outputs: List[Dict[str, str]] = NEMO_OUTPUTS
     config_schema: Dict[str, Any] = nemo_config_schema(default_lang="en")
     cost_per_call_estimate_usd: Optional[float] = 0.0
+    supported_languages: List[str] = ["en"]
     # Pseudo-stream by chunking — Parakeet is batch-only on the server.
     is_streaming = True
 

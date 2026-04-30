@@ -249,7 +249,10 @@ async def run_pipeline(
                         "tts stage requires upstream text (chain after ASR or "
                         "supply config.text in stage_configs)"
                     )
-                result = await adapter.synthesize(snap_text, config)
+                merged_config = {**config}
+                if snap_language and "language" not in config:
+                    merged_config["language"] = snap_language
+                result = await adapter.synthesize(snap_text, merged_config)
                 delta["audio_path"] = _persist_audio_b64(
                     result.get("audio_b64"),
                     sample_rate=int(result.get("sample_rate", 16000)),

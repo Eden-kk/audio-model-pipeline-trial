@@ -268,6 +268,7 @@ class Registry:
         (omitting the callable method — just the identity/schema fields)."""
         out = []
         for a in self._adapters.values():
+            _langs = list(getattr(a, "supported_languages", []) or [])
             out.append({
                 "id": a.id,
                 "category": a.category,
@@ -279,6 +280,8 @@ class Registry:
                 "config_schema": a.config_schema,
                 "cost_per_call_estimate_usd": a.cost_per_call_estimate_usd,
                 "is_streaming": bool(getattr(a, "is_streaming", False)),
+                "supported_languages": _langs,
+                "multilang": len(_langs) > 1,
             })
         return out
 
