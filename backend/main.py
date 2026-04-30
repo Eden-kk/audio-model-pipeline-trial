@@ -506,13 +506,42 @@ async def enroll_wearer(
         tmp.write(audio_bytes)
         tmp_path = tmp.name
 
+    # libsndfile (used by pyannote_verify) cannot decode WebM/Opus or MP4/AAC.
+    # Transcode anything outside its safe set to 16 kHz mono WAV via ffmpeg.
+    _LIBSNDFILE_SAFE = {".wav", ".flac", ".ogg", ".aiff", ".aif"}
+    suffix_lower = suffix.lower()
+    needs_transcode = suffix_lower not in _LIBSNDFILE_SAFE
+    if needs_transcode:
+        wav_path = tmp_path + ".wav"
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", tmp_path,
+            "-ac", "1", "-ar", "16000", "-f", "wav", wav_path,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise HTTPException(
+                status_code=400,
+                detail=f"could not decode upload (ffmpeg): "
+                       f"{err.decode('utf-8', 'replace')[:400]}",
+            )
+        enroll_path = wav_path
+    else:
+        enroll_path = tmp_path
+
     try:
-        result = await ad.enroll(tmp_path, {})
+        result = await ad.enroll(enroll_path, {})
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        for _p in {tmp_path, enroll_path}:
+            try:
+                os.unlink(_p)
+            except OSError:
+                pass
 
     enr_dir = _enrollments_dir()
     enr_dir.mkdir(parents=True, exist_ok=True)
