@@ -2234,7 +2234,7 @@ async def _proxy_chunked_batch_mic(
     import tempfile
     import wave
 
-    CHUNK_INTERVAL_S = 1.5
+    CHUNK_INTERVAL_S = 0.8
 
     adapter_id = getattr(adapter_obj, "id", "unknown")
 
