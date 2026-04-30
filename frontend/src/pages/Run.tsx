@@ -12,6 +12,7 @@ import {
 } from '../lib/api'
 import { cx } from '../lib/cx'
 import SegmentTimeline, { type Segment } from '../components/SegmentTimeline'
+import { formatLanguage } from '../lib/lang'
 
 const CATEGORY_BADGE: Record<string, string> = {
   asr: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -54,15 +55,29 @@ interface StageNodeData {
    *  speaker_verify ↔ enrolled-profile adapter mismatches. */
   warning?: string
   onAdapterChange?: (adapterId: string) => void
+  onConfigChange?: (stageId: string, patch: Record<string, unknown>) => void
   adapterChoices?: Adapter[]
+  clip?: Clip | null
+  stageConfig?: Record<string, unknown>
 }
 
 // ─── Custom node ─────────────────────────────────────────────────────────────
 
 function StageNode({ data }: NodeProps<StageNodeData>) {
   const { category, stageId, adapterId, state, latencyMs, outputPreview, error,
-          warning, onAdapterChange, adapterChoices } = data
+          warning, onAdapterChange, onConfigChange, adapterChoices, clip, stageConfig } = data
   const choices = (adapterChoices ?? []).filter((a) => a.category === category)
+  const pickedAdapter = (adapterChoices ?? []).find((a) => a.id === adapterId)
+
+  useEffect(() => {
+    if (!pickedAdapter?.multilang || !onConfigChange) return
+    const langs = pickedAdapter.supported_languages ?? []
+    if (langs.length === 0) return
+    const fromClip = clip?.language_detected
+    const def = (fromClip && langs.includes(fromClip)) ? fromClip : langs[0]
+    if (def) onConfigChange(stageId, { language: def })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedAdapter?.id, pickedAdapter?.multilang, clip?.id, clip?.language_detected])
 
   const ringColor =
     state === 'done'    ? 'ring-green-300'
@@ -118,10 +133,23 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
         </p>
       )}
 
-      {(adapterChoices ?? []).find((a) => a.id === adapterId)?.multilang && (
+      {pickedAdapter?.multilang && (
         <span className="inline-flex self-start px-2 py-0.5 rounded-full text-[11px] bg-indigo-50 text-indigo-700 border border-indigo-200 mb-2">
           Multi-lang
         </span>
+      )}
+
+      {pickedAdapter?.multilang && (pickedAdapter.supported_languages ?? []).length > 0 && (
+        <select
+          className="field text-xs w-full mb-2"
+          value={(stageConfig?.language as string | undefined) ?? ''}
+          onChange={(e) => onConfigChange?.(stageId, { language: e.target.value })}
+          disabled={state === 'running'}
+        >
+          {(pickedAdapter.supported_languages ?? []).map((code) => (
+            <option key={code} value={code}>{formatLanguage(code)}</option>
+          ))}
+        </select>
       )}
 
       {warning && state !== 'done' && state !== 'error' && (
@@ -168,6 +196,7 @@ export default function Run() {
   const [recipeId, setRecipeId] = useState<string>(recipeIdParam ?? '')
   const [clipId, setClipId] = useState<string>(clipIdParam ?? '')
   const [stageAdapters, setStageAdapters] = useState<Record<string, string>>({})
+  const [stageConfigs, setStageConfigs] = useState<Record<string, Record<string, unknown>>>({})
   const [stageStates, setStageStates] = useState<Record<string, StageState>>({})
   const [stageResults, setStageResults] = useState<Record<string, StageRun>>({})
   const [busy, setBusy] = useState(false)
@@ -213,6 +242,7 @@ export default function Run() {
       initialStates[s.id] = 'idle'
     }
     setStageAdapters(initialAdapters)
+    setStageConfigs({})
     setStageStates(initialStates)
     setStageResults({})
     setRunResult(null)
@@ -284,8 +314,12 @@ export default function Run() {
           error: stageResults[s.id]?.error ?? undefined,
           warning,
           adapterChoices: adapters,
+          clip,
+          stageConfig: stageConfigs[s.id],
           onAdapterChange: (adapterId: string) =>
             setStageAdapters((prev) => ({ ...prev, [s.id]: adapterId })),
+          onConfigChange: (id: string, patch: Record<string, unknown>) =>
+            setStageConfigs((prev) => ({ ...prev, [id]: { ...(prev[id] ?? {}), ...patch } })),
         } satisfies StageNodeData,
       }
     })
@@ -322,7 +356,7 @@ export default function Run() {
       }
     })
     return { nodes, edges }
-  }, [recipe, adapters, enrollments, stageAdapters, stageStates, stageResults])
+  }, [recipe, adapters, enrollments, stageAdapters, stageConfigs, stageStates, stageResults, clip])
 
   async function handleRun() {
     if (!recipe || !clip) return
@@ -330,7 +364,7 @@ export default function Run() {
     setStageStates(Object.fromEntries(recipe.stages.map((s) => [s.id, 'running'])))
     setStageResults({})
     try {
-      const res = await startRecipeRun(clip.id, recipe.id, stageAdapters)
+      const res = await startRecipeRun(clip.id, recipe.id, stageAdapters, stageConfigs)
       setRunResult(res)
       const newStates: Record<string, StageState> = {}
       const newResults: Record<string, StageRun> = {}
