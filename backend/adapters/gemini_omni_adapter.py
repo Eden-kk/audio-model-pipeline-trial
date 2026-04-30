@@ -246,11 +246,38 @@ class GeminiOmniAdapter:
 
         sender_task = asyncio.create_task(_sender(), name="gemini-sender")
         aborted = False
-        done_emitted = False
+        any_turn_completed = False
         try:
-            async for resp in session.receive():
+            # Drive the receive loop by calling session._receive() directly.
+            #
+            # WHY NOT session.receive():
+            #   The SDK's `session.receive()` is a single-turn iterator —
+            #   it yields messages until it sees `turn_complete`, then
+            #   `break`s. If we do `async for resp in session.receive():`
+            #   the loop exits after the FIRST turn, exhausting this
+            #   generator and causing _pump_adapter_to_browser to return,
+            #   which in turn satisfies the proxy's FIRST_COMPLETED and
+            #   tears the whole session down. A second utterance then has
+            #   no live WS to talk to.
+            #
+            # WHY session._receive() IS SAFE:
+            #   _receive() is a thin wrapper: await self._ws.recv() +
+            #   JSON parse. It raises ConnectionClosed when the server
+            #   closes the WS (session expiry, error, etc.), which we
+            #   catch below and exit cleanly. No hidden state is kept
+            #   between calls.
+            while True:
                 if abort_event is not None and abort_event.is_set():
                     aborted = True
+                    break
+                try:
+                    resp = await session._receive()
+                except Exception:
+                    # ConnectionClosed or any other SDK error — server
+                    # closed the live session (timeout, quota, etc.).
+                    # Exit the loop; if we had a clean turn the UI
+                    # already has its done; if not, fall through to the
+                    # aborted path below.
                     break
                 sc = getattr(resp, "server_content", None)
 
@@ -278,24 +305,28 @@ class GeminiOmniAdapter:
                            "sample_rate": 24000}
 
                 if sc is not None and getattr(sc, "turn_complete", False):
+                    # Per-turn done. Stay in the receive loop — Gemini
+                    # Live keeps the WS open across turns; we continue
+                    # `while True` here so the next utterance's audio
+                    # frames (already queued by the sender task) flow
+                    # into the same session without a reconnect.
                     if sender_exc:
                         yield {"type": "done",
                                "error": f"{type(sender_exc[0]).__name__}: {sender_exc[0]}",
                                "latency_ms": 0.0, "cost_usd": 0.0}
+                        sender_exc.clear()
                     else:
                         yield {"type": "done",
                                "latency_ms": (time.perf_counter() - t0) * 1000.0,
                                "cost_usd": self.cost_per_call_estimate_usd or 0.0}
-                    done_emitted = True
-                    break
+                    any_turn_completed = True
+                    t0 = time.perf_counter()       # baseline for next turn
 
-            # Abort path — receiver broke before turn_complete fired.
-            # Without this, the frontend's "model is replying" UI hangs
-            # because no `done` arrives. Mirrors MiniCPM-o's aborted=True
-            # done at minicpm_o_adapter.py:362-365. Stays inside `try` so
-            # the yield is delivered (yields from `finally` after a
-            # propagating exception are silently lost).
-            if aborted and not done_emitted:
+            # Abort path — receiver broke without an in-flight turn. If
+            # at least one turn already completed cleanly, the UI has its
+            # done; suppress the duplicate. Mirrors MiniCPM-o's
+            # aborted=True done at minicpm_o_adapter.py:362-365.
+            if aborted and not any_turn_completed:
                 yield {"type": "done",
                        "latency_ms": (time.perf_counter() - t0) * 1000.0,
                        "cost_usd": 0.0,
