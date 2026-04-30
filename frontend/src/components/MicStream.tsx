@@ -11,6 +11,8 @@ interface Props {
    *  to arrive (which can lag 200-500 ms). */
   onLocalStop?: () => void
   disabled?: boolean
+  /** BCP-47 language code or 'auto'. Locked at stream start. */
+  language?: string
 }
 
 /** Live-mic streaming button. Records via AudioWorklet and streams 16 kHz
@@ -23,7 +25,7 @@ interface Props {
  *  in (so the user can build the AR-glass benchmark by speaking into the
  *  mic). The clip_id arrives in a `ClipSaved` event and gets surfaced
  *  inline so the user can jump to the new corpus row. */
-export default function MicStream({ adapter, onEvent, onLocalStop, disabled = false }: Props) {
+export default function MicStream({ adapter, onEvent, onLocalStop, disabled = false, language }: Props) {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [seconds, setSeconds] = useState(0)
@@ -40,6 +42,7 @@ export default function MicStream({ adapter, onEvent, onLocalStop, disabled = fa
       const handle = await startMicStream({
         adapter,
         save: saveToCorpus,
+        language,
         onEvent: (ev) => {
           onEvent(ev)
           if (ev.event === 'ClipSaved' && ev.clip_id) {

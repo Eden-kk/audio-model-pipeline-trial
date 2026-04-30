@@ -48,6 +48,9 @@ interface StartOptions {
    *  + streaming transcript as a corpus clip on stop. Default false
    *  preserves the legacy ephemeral live-stream UX. */
   save?: boolean
+  /** BCP-47 language code or 'auto'. Forwarded to /ws/mic as ?language=.
+   *  Ignored by adapters that don't support a language param. */
+  language?: string
 }
 
 export async function startMicStream({
@@ -55,6 +58,7 @@ export async function startMicStream({
   onEvent,
   onError,
   save = false,
+  language,
 }: StartOptions): Promise<MicStreamHandle> {
   // 1) Get the mic
   let stream: MediaStream
@@ -90,7 +94,7 @@ export async function startMicStream({
 
   // 3) Open the WS to backend, wait for it to open
   const wsBase = BASE.replace(/^http/, 'ws')
-  const wsUrl = `${wsBase}/ws/mic?adapter=${encodeURIComponent(adapter)}&sample_rate=${audioCtx.sampleRate}${save ? '&save=1' : ''}`
+  const wsUrl = `${wsBase}/ws/mic?adapter=${encodeURIComponent(adapter)}&sample_rate=${audioCtx.sampleRate}${save ? '&save=1' : ''}${language ? `&language=${encodeURIComponent(language)}` : ''}`
   const ws = new WebSocket(wsUrl)
   ws.binaryType = 'arraybuffer'
 

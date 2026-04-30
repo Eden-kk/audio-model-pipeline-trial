@@ -1261,6 +1261,7 @@ async def ws_mic(
     adapter: str,
     sample_rate: int = 16000,
     save: int = 0,
+    language: str = "en",
 ):
     await websocket.accept()
     try:
@@ -1284,10 +1285,10 @@ async def ws_mic(
 
     if adapter in ("deepgram",):
         await _proxy_deepgram_mic(websocket, sample_rate, adapter_obj,
-                                  save_to_corpus=save_to_corpus)
+                                  save_to_corpus=save_to_corpus, language=language)
     elif adapter in ("assemblyai",):
         await _proxy_assemblyai_mic(websocket, sample_rate, adapter_obj,
-                                    save_to_corpus=save_to_corpus)
+                                    save_to_corpus=save_to_corpus, language=language)
     elif adapter in ("parakeet", "canary_1b_flash", "canary_qwen_25b"):
         await _proxy_nemo_mic(websocket, sample_rate, adapter_obj,
                               save_to_corpus=save_to_corpus)
@@ -1314,6 +1315,7 @@ async def _proxy_deepgram_mic(
     adapter_obj: Any,
     *,
     save_to_corpus: bool = False,
+    language: str = "en",
 ) -> None:
     """Forward PCM from client → Deepgram WS; translate Results frames back.
 
@@ -1333,9 +1335,11 @@ async def _proxy_deepgram_mic(
     pcm_buf = bytearray() if save_to_corpus else None
     max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
 
+    # deepgram language=multi is gated; map 'auto' to 'en' for the mic path.
+    dg_language = language if language not in ("auto", "") else "en"
     params = {
         "model": "nova-3",
-        "language": "en",
+        "language": dg_language,
         "encoding": "linear16",
         "sample_rate": str(sample_rate),
         "channels": "1",
@@ -1508,6 +1512,7 @@ async def _proxy_assemblyai_mic(
     adapter_obj: Any,
     *,
     save_to_corpus: bool = False,
+    language: str = "en",
 ) -> None:
     """Forward PCM from client → AssemblyAI v3 streaming WS; translate Turn frames.
 
@@ -1526,9 +1531,15 @@ async def _proxy_assemblyai_mic(
     pcm_buf = bytearray() if save_to_corpus else None
     max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
 
+    # assemblyai binary model choice: english vs multilingual
+    aai_model = (
+        "universal-streaming-multilingual"
+        if language not in ("en", "")
+        else "universal-streaming-english"
+    )
     url = (f"wss://streaming.assemblyai.com/v3/ws"
            f"?sample_rate={sample_rate}"
-           f"&speech_model=universal-streaming-english"
+           f"&speech_model={aai_model}"
            f"&format_turns=true")
 
     t0 = time.perf_counter()

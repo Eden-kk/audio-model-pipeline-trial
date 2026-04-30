@@ -76,6 +76,10 @@ export default function Playground() {
   const [results, setResults] = useState<StageResult[]>([])
   const [runError, setRunError] = useState<string | null>(null)
   const [inputMode, setInputMode] = useState<'record' | 'upload' | 'mic-stream'>('upload')
+  const [language, setLanguage] = useState<string>('auto')
+  // True once a mic-stream WS has opened (StageStarted received); reset when
+  // the stream ends. Used to lock the language picker for mic-stream mode.
+  const [micStreamActive, setMicStreamActive] = useState(false)
 
   // Load adapters on mount
   useEffect(() => {
@@ -403,6 +407,51 @@ export default function Playground() {
               </div>
             )}
 
+            {selectedMeta && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-gray-500" htmlFor="lang-select">
+                  Language
+                  {inputMode === 'mic-stream' && micStreamActive && (
+                    <span
+                      className="ml-1.5 text-amber-600"
+                      title="Language is locked once the stream starts"
+                    >
+                      (locked — stream active)
+                    </span>
+                  )}
+                </label>
+                <select
+                  id="lang-select"
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  disabled={busy || (inputMode === 'mic-stream' && micStreamActive)}
+                  className="field w-full"
+                  title={
+                    inputMode === 'mic-stream' && micStreamActive
+                      ? 'Language is locked once the stream starts'
+                      : undefined
+                  }
+                >
+                  <option value="auto">auto-detect</option>
+                  <option value="en">en — English</option>
+                  <option value="zh">zh — Chinese</option>
+                  <option value="es">es — Spanish</option>
+                  <option value="fr">fr — French</option>
+                  <option value="de">de — German</option>
+                  <option value="ja">ja — Japanese</option>
+                  <option value="ko">ko — Korean</option>
+                  <option value="pt">pt — Portuguese</option>
+                  <option value="hi">hi — Hindi</option>
+                  <option value="ar">ar — Arabic</option>
+                </select>
+                {inputMode === 'mic-stream' && !micStreamActive && (
+                  <p className="text-xs text-gray-400">
+                    Language is locked once the stream starts.
+                  </p>
+                )}
+              </div>
+            )}
+
             {adaptersError && (
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-gray-500">Or enter adapter ID manually</label>
@@ -492,7 +541,7 @@ export default function Playground() {
                     key={id}
                     type="button"
                     disabled={busy || blocked}
-                    onClick={() => setInputMode(id)}
+                    onClick={() => { setInputMode(id); setMicStreamActive(false) }}
                     title={blocked ? 'Pick a streaming-capable adapter (●) first' : undefined}
                     className={cx(
                       inputMode === id ? 'btn-pill-dark' : 'btn-pill-outline',
@@ -515,6 +564,7 @@ export default function Playground() {
             {inputMode === 'mic-stream' && selectedMeta?.is_streaming && (
               <MicStream
                 adapter={selectedAdapter}
+                language={language}
                 disabled={busy}
                 // The user clicking Stop in MicStream resets its internal
                 // `streaming` flag immediately, but our `runState` would stay
@@ -523,6 +573,7 @@ export default function Playground() {
                 // meantime. Mirror the local-stop here so the user can kick
                 // off another stream right away.
                 onLocalStop={() => {
+                  setMicStreamActive(false)
                   if (runState === 'running') {
                     setRunState('done')
                     setStatusMsg('Done')
@@ -536,6 +587,7 @@ export default function Playground() {
                 onEvent={(ev) => {
                   setEvents((prev) => [...prev, ev])
                   if (ev.event === 'StageStarted') {
+                    setMicStreamActive(true)
                     setRunState('running')
                     setStatusMsg('Streaming…')
                     setRunError(null)
@@ -562,6 +614,7 @@ export default function Playground() {
                     })
                   }
                   if (ev.event === 'StageCompleted') {
+                    setMicStreamActive(false)
                     setResults((prev) => {
                       const r = prev[0] ?? { stage_id: selectedAdapter, is_streaming: true }
                       return [{
@@ -576,6 +629,7 @@ export default function Playground() {
                     setStatusMsg('Done')
                   }
                   if (ev.event === 'StageFailed') {
+                    setMicStreamActive(false)
                     setRunError(ev.error ?? 'Streaming failed')
                     setRunState('error')
                   }
