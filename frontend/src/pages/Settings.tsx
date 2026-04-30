@@ -351,11 +351,11 @@ INTENT_LLM_MODEL=gpt-4o-mini`}
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm font-medium text-gray-900">Gemini Live (Vertex / Gen Language)</span>
                 <StatusPill
-                  ok={settings.realtime_omni.gemini_live.api_key_configured}
+                  ok={settings.realtime_omni.gemini_live.ready}
                   label={
-                    settings.realtime_omni.gemini_live.api_key_configured
-                      ? 'GEMINI_API_KEY set (ready to wire adapter)'
-                      : 'GEMINI_API_KEY missing — Slice O4 parked'
+                    settings.realtime_omni.gemini_live.ready
+                      ? 'Adapter ready — selectable in /realtime'
+                      : 'Adapter not yet ready — see status note'
                   }
                 />
                 <StatusPill
@@ -373,7 +373,11 @@ INTENT_LLM_MODEL=gpt-4o-mini`}
                   location: {settings.realtime_omni.gemini_live.vertex_location || 'global'}
                 </p>
               )}
-              <p className="text-[11px] text-amber-700 italic mt-2">
+              <p className={
+                settings.realtime_omni.gemini_live.ready
+                  ? 'text-[11px] text-emerald-700 italic mt-2'
+                  : 'text-[11px] text-amber-700 italic mt-2'
+              }>
                 {settings.realtime_omni.gemini_live.status_note}
               </p>
             </div>

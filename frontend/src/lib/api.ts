@@ -350,6 +350,9 @@ export interface BackendSettings {
       vertex_project: string
       vertex_location: string
       api_key_configured: boolean
+      /** True iff ADC + project + region are all set — i.e. the
+       *  `gemini_live` adapter is selectable in /realtime. */
+      ready: boolean
       status_note: string
     }
   }

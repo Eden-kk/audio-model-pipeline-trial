@@ -671,14 +671,29 @@ async def get_settings():
                 "url": os.environ.get("MINICPM_O_REALTIME_URL", ""),
             },
             "gemini_live": {
-                # Parked behind Slice O4; surfaced so the user knows what's missing.
                 "vertex_adc_configured": adc_ok,
                 "vertex_project": os.environ.get("GEMINI_VERTEX_PROJECT", ""),
                 "vertex_location": os.environ.get("GEMINI_VERTEX_LOCATION", ""),
+                # Separate from `ready` — kept for the iOS Live path (P2)
+                # which uses Gen Language API + GEMINI_API_KEY directly.
                 "api_key_configured": bool(os.environ.get("GEMINI_API_KEY")),
+                # Adapter is selectable in /realtime when ADC + project +
+                # region are all resolved. Half-configured stays false.
+                "ready": adc_ok
+                         and bool(os.environ.get("GEMINI_VERTEX_PROJECT"))
+                         and bool(os.environ.get("GEMINI_VERTEX_LOCATION")),
                 "status_note": (
-                    "Vertex Live preview-gated for project " + (os.environ.get("GEMINI_VERTEX_PROJECT") or "?")
-                    + "; using Gen Language API + GEMINI_API_KEY when set (Slice O4)."
+                    "Vertex ADC + project + region resolved. Adapter "
+                    "'gemini_live' is registered and selectable in the "
+                    "realtime dropdown."
+                    if (adc_ok
+                        and os.environ.get("GEMINI_VERTEX_PROJECT")
+                        and os.environ.get("GEMINI_VERTEX_LOCATION"))
+                    else (
+                        "Set GOOGLE_APPLICATION_CREDENTIALS, "
+                        "GEMINI_VERTEX_PROJECT, and GEMINI_VERTEX_LOCATION "
+                        "in backend/.env, then restart uvicorn."
+                    )
                 ),
             },
         },
