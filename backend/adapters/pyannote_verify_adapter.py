@@ -15,6 +15,27 @@ import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import torchaudio  # noqa: F401
+
+# torchaudio >= 2.11 dropped AudioMetaData; pyannote.audio still annotates
+# with it (return-type hint on Inference.__call__'s internal helpers).
+# Shim a minimal compatible class so attribute lookup at function-def /
+# call time succeeds without downgrading torchaudio.
+if not hasattr(torchaudio, "AudioMetaData"):
+    class _AudioMetaDataShim:
+        __slots__ = ("sample_rate", "num_frames", "num_channels",
+                     "bits_per_sample", "encoding")
+
+        def __init__(self, sample_rate: int = 0, num_frames: int = 0,
+                     num_channels: int = 0, bits_per_sample: int = 0,
+                     encoding: str = "") -> None:
+            self.sample_rate = int(sample_rate)
+            self.num_frames = int(num_frames)
+            self.num_channels = int(num_channels)
+            self.bits_per_sample = int(bits_per_sample)
+            self.encoding = str(encoding)
+
+    torchaudio.AudioMetaData = _AudioMetaDataShim  # type: ignore[attr-defined]
 
 _MODEL = "pyannote/embedding"
 _DEFAULT_THRESHOLD = 0.50
