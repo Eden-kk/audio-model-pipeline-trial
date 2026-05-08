@@ -67,6 +67,7 @@ _ADAPTERS = [
     ("adapters.gemini_omni_adapter", "GeminiOmniAdapter"),
     # OpenAI Realtime voice models
     ("adapters.openai_realtime_whisper_adapter", "OpenAIRealtimeWhisperAdapter"),
+    ("adapters.openai_realtime_translate_adapter", "OpenAIRealtimeTranslateAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
