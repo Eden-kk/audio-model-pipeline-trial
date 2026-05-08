@@ -68,6 +68,7 @@ _ADAPTERS = [
     # OpenAI Realtime voice models
     ("adapters.openai_realtime_whisper_adapter", "OpenAIRealtimeWhisperAdapter"),
     ("adapters.openai_realtime_translate_adapter", "OpenAIRealtimeTranslateAdapter"),
+    ("adapters.openai_realtime_2_adapter", "OpenAIRealtime2Adapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
