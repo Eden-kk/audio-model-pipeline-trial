@@ -3,6 +3,7 @@ uvicorn[standard]==0.32.0
 python-multipart
 soundfile
 numpy<2
+scipy
 httpx
 websockets>=12         # Slice 3 streaming adapters
 pydantic>=2.0

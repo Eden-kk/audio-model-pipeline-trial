@@ -65,6 +65,8 @@ _ADAPTERS = [
     # 2.5-flash-native-audio (auth via ADC).
     ("adapters.minicpm_o_adapter", "MiniCPMOAdapter"),
     ("adapters.gemini_omni_adapter", "GeminiOmniAdapter"),
+    # OpenAI Realtime voice models
+    ("adapters.openai_realtime_whisper_adapter", "OpenAIRealtimeWhisperAdapter"),
 ]
 
 for mod_path, cls_name in _ADAPTERS:
