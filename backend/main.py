@@ -2429,6 +2429,8 @@ async def _proxy_openai_realtime_whisper_mic(
                 },
             }))
 
+            commit_sent = asyncio.Event()
+
             async def client_to_openai():
                 while True:
                     msg = await client_ws.receive()
@@ -2452,9 +2454,14 @@ async def _proxy_openai_realtime_whisper_mic(
                         if ctrl.get("type") == "stop":
                             await openai_ws.send(json.dumps(
                                 {"type": "input_audio_buffer.commit"}))
+                            commit_sent.set()
                             return "stop"
 
             async def openai_to_client():
+                # The API can emit .completed mid-stream when its internal VAD
+                # hits a pause. Treat those as item-boundary markers (keep
+                # listening + accumulating); only treat .completed as end-of-
+                # session once we've sent the explicit commit.
                 nonlocal full_text, partial_count
                 async for raw in openai_ws:
                     try:
@@ -2471,8 +2478,9 @@ async def _proxy_openai_realtime_whisper_mic(
                             "partial_index": partial_count,
                         })
                     elif t == "conversation.item.input_audio_transcription.completed":
-                        full_text = m.get("transcript", full_text)
-                        return
+                        if commit_sent.is_set():
+                            full_text = m.get("transcript", full_text)
+                            return
                     elif t == "error":
                         log.warning("whisper-mic: openai error: %s",
                                     json.dumps(m.get("error", {}))[:300])
