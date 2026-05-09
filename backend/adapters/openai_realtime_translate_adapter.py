@@ -57,6 +57,24 @@ class OpenAIRealtimeTranslateAdapter:
                 "default": "alloy",
                 "enum": ["alloy", "echo", "shimmer", "fable", "onyx", "nova"],
             },
+            "silence_duration_ms": {
+                "type": "integer",
+                "default": 250,
+                "minimum": 100,
+                "maximum": 2000,
+                "description": (
+                    "How long a silence triggers end-of-utterance segmentation. "
+                    "Lower = more frequent (sync-interpreter-feel) but choppier. "
+                    "Higher = wait for full sentence (smoother)."
+                ),
+            },
+            "vad_threshold": {
+                "type": "number",
+                "default": 0.5,
+                "minimum": 0.1,
+                "maximum": 0.9,
+                "description": "Server VAD speech-probability threshold; lower = more sensitive.",
+            },
             "model": {
                 "type": "string",
                 "default": "gpt-realtime",
@@ -91,11 +109,15 @@ class OpenAIRealtimeTranslateAdapter:
         target_language = config.get("target_language", "en")
         voice = config.get("voice", "alloy")
         model = config.get("model", "gpt-realtime")
+        silence_duration_ms = int(config.get("silence_duration_ms", 250))
+        vad_threshold = float(config.get("vad_threshold", 0.5))
         api_key = self._api_key()
 
         instructions = (
             f"Translate the speaker's speech into {target_language}. "
-            "Output only the translation, no additional commentary."
+            "Output only the translation, no additional commentary. "
+            "Translate each fragment as it arrives, even if incomplete — "
+            "do not wait for a full sentence."
         )
 
         async with websockets.connect(
@@ -115,9 +137,9 @@ class OpenAIRealtimeTranslateAdapter:
                             "transcription": {"model": "whisper-1"},
                             "turn_detection": {
                                 "type": "server_vad",
-                                "threshold": 0.5,
+                                "threshold": vad_threshold,
                                 "prefix_padding_ms": 300,
-                                "silence_duration_ms": 800,
+                                "silence_duration_ms": silence_duration_ms,
                                 "create_response": True,
                                 "interrupt_response": True,
                             },
