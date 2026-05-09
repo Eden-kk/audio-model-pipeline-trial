@@ -55,7 +55,11 @@ class OpenAIRealtimeTranslateAdapter:
             },
             "model": {
                 "type": "string",
-                "default": "gpt-realtime-translate",
+                "default": "gpt-realtime",
+                "description": (
+                    "Carrier realtime model used with a translation system prompt. "
+                    "gpt-realtime-translate is broken server-side as of 2026-05-08."
+                ),
             },
         },
     }
@@ -83,7 +87,7 @@ class OpenAIRealtimeTranslateAdapter:
         source_language = config.get("source_language", "auto")
         target_language = config.get("target_language", "en")
         voice = config.get("voice", "alloy")
-        model = config.get("model", "gpt-realtime-translate")
+        model = config.get("model", "gpt-realtime")
         api_key = self._api_key()
 
         pcm_buf = bytearray()
@@ -110,14 +114,14 @@ class OpenAIRealtimeTranslateAdapter:
             pcm_bytes = pcm_24k.tobytes()
 
             session: Dict[str, Any] = {
-                "modalities": ["audio"],
+                "modalities": ["audio", "text"],
                 "instructions": (
                     f"Translate the speaker's speech into {target_language}. "
                     "Output only the translation, no additional commentary."
                 ),
                 "voice": voice,
                 "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": {"type": None},
+                "turn_detection": None,
                 **({"language": source_language} if source_language != "auto" else {}),
             }
 
