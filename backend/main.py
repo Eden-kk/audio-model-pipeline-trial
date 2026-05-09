@@ -2414,6 +2414,11 @@ async def _proxy_openai_realtime_whisper_mic(
             additional_headers={"Authorization": f"Bearer {api_key}"},
             ping_interval=20,
         ) as openai_ws:
+            # Use server_vad for auto-segmentation across pauses. Manual mode
+            # (turn_detection: null) silently stops emitting deltas after a
+            # long silence and only transcribes the first utterance.
+            # `create_response: false` keeps this transcription-only — no chat
+            # reply fires when an utterance ends.
             await openai_ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
@@ -2422,7 +2427,14 @@ async def _proxy_openai_realtime_whisper_mic(
                         "input": {
                             "format": {"type": "audio/pcm", "rate": 24000},
                             "transcription": {"model": transcription_model},
-                            "turn_detection": None,
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "threshold": 0.5,
+                                "prefix_padding_ms": 300,
+                                "silence_duration_ms": 800,
+                                "create_response": False,
+                                "interrupt_response": False,
+                            },
                         },
                         "output": {"format": {"type": "audio/pcm", "rate": 24000}},
                     },
@@ -2478,8 +2490,13 @@ async def _proxy_openai_realtime_whisper_mic(
                             "partial_index": partial_count,
                         })
                     elif t == "conversation.item.input_audio_transcription.completed":
+                        # The .completed event's `transcript` field is for THIS
+                        # item only. Multi-item sessions (server_vad auto-segments
+                        # at silences) would have `full_text` contain all items'
+                        # accumulated deltas; replacing it with this one item's
+                        # transcript would discard the rest. Just exit on the
+                        # post-commit completed and trust the accumulator.
                         if commit_sent.is_set():
-                            full_text = m.get("transcript", full_text)
                             return
                     elif t == "error":
                         log.warning("whisper-mic: openai error: %s",
