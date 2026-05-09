@@ -1,12 +1,21 @@
-"""OpenAI Realtime Translate adapter — per-utterance speech-to-speech translation.
+"""OpenAI Realtime Translate adapter — speech-to-speech translation.
 
-Per-utterance WSS: one connection opened per flush frame, closed after response.done.
+Persistent WSS session with server_vad auto-segmenting: as the user
+speaks, audio is forwarded continuously; the API detects end-of-utterance
+at silence boundaries, auto-commits, and streams a translation response
+back. Multi-utterance — the session stays open across pauses.
+
+Uses the GA Realtime API (no `OpenAI-Beta` header). The carrier model is
+`gpt-realtime` with a translation system prompt — `gpt-realtime-translate`
+is broken server-side as of 2026-05-08 (inference_not_found_error).
 
 Env: OPENAI_API_KEY
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -38,11 +47,6 @@ class OpenAIRealtimeTranslateAdapter:
     config_schema: Dict[str, Any] = {
         "type": "object",
         "properties": {
-            "source_language": {
-                "type": "string",
-                "default": "auto",
-                "description": "BCP-47 or 'auto'",
-            },
             "target_language": {
                 "type": "string",
                 "default": "en",
@@ -81,80 +85,96 @@ class OpenAIRealtimeTranslateAdapter:
         media_iter: AsyncIterator[Dict[str, Any]],
         *,
         config: dict,
-        context_iter: Optional[AsyncIterator[Any]] = None,  # not used; translation is stateless
+        context_iter: Optional[AsyncIterator[Any]] = None,
         abort_event: Optional[Any] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        source_language = config.get("source_language", "auto")
         target_language = config.get("target_language", "en")
         voice = config.get("voice", "alloy")
         model = config.get("model", "gpt-realtime")
         api_key = self._api_key()
 
-        pcm_buf = bytearray()
+        instructions = (
+            f"Translate the speaker's speech into {target_language}. "
+            "Output only the translation, no additional commentary."
+        )
 
-        async for frame in media_iter:
-            if frame.get("type") == "audio":
-                payload = frame.get("payload")
-                if payload:
-                    pcm_buf.extend(payload)
-                continue
-
-            if frame.get("type") != "flush":
-                continue
-
-            if abort_event is not None and abort_event.is_set():
-                yield {"type": "done", "latency_ms": 0.0, "cost_usd": 0.0, "aborted": True}
-                pcm_buf = bytearray()
-                continue
+        async with websockets.connect(
+            _WS_URL.format(model=model),
+            additional_headers={"Authorization": f"Bearer {api_key}"},
+            ping_interval=20,
+        ) as ws:
+            await ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "type": "realtime",
+                    "instructions": instructions,
+                    "output_modalities": ["audio"],
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "transcription": {"model": "whisper-1"},
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "threshold": 0.5,
+                                "prefix_padding_ms": 300,
+                                "silence_duration_ms": 800,
+                                "create_response": True,
+                                "interrupt_response": True,
+                            },
+                        },
+                        "output": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "voice": voice,
+                        },
+                    },
+                },
+            }))
 
             t0 = time.perf_counter()
 
-            pcm_16k = np.frombuffer(bytes(pcm_buf), dtype="int16")
-            pcm_24k = resample_poly(pcm_16k, 3, 2).astype("int16")
-            pcm_bytes = pcm_24k.tobytes()
-
-            session: Dict[str, Any] = {
-                "modalities": ["audio", "text"],
-                "instructions": (
-                    f"Translate the speaker's speech into {target_language}. "
-                    "Output only the translation, no additional commentary."
-                ),
-                "voice": voice,
-                "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": None,
-                **({"language": source_language} if source_language != "auto" else {}),
-            }
-
-            async with websockets.connect(
-                _WS_URL.format(model=model),
-                additional_headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "OpenAI-Beta": "realtime=v1",
-                },
-                ping_interval=20,
-            ) as ws:
-                await ws.send(json.dumps({"type": "session.update", "session": session}))
-
-                for i in range(0, len(pcm_bytes), _CHUNK):
-                    chunk = pcm_bytes[i: i + _CHUNK]
-                    await ws.send(json.dumps({
-                        "type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(chunk).decode(),
-                    }))
-
-                await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-                await ws.send(json.dumps({"type": "response.create"}))
-
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
+            async def _sender() -> None:
+                async for frame in media_iter:
+                    if abort_event is not None and abort_event.is_set():
+                        break
+                    if frame.get("type") != "audio":
+                        continue   # flush frames are no-op under server_vad
+                    payload = frame.get("payload")
+                    if not payload:
                         continue
+                    pcm_16k = np.frombuffer(bytes(payload), dtype="int16")
+                    pcm_24k = resample_poly(pcm_16k, 3, 2).astype("int16").tobytes()
+                    for i in range(0, len(pcm_24k), _CHUNK):
+                        await ws.send(json.dumps({
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(pcm_24k[i: i + _CHUNK]).decode(),
+                        }))
+
+            sender_task = asyncio.create_task(_sender(), name="openai-realtime-translate-sender")
+            try:
+                while True:
+                    if abort_event is not None and abort_event.is_set():
+                        break
+                    try:
+                        msg = json.loads(await ws.recv())
+                    except websockets.exceptions.ConnectionClosed:
+                        break
+                    except Exception as exc:
+                        yield {"type": "done", "error": f"{type(exc).__name__}: {exc}",
+                               "latency_ms": 0.0, "cost_usd": 0.0}
+                        break
                     t = msg.get("type", "")
-                    if t == "response.audio.delta":
-                        yield {"type": "audio_b64", "data": msg["delta"], "sample_rate": 24000}
-                    elif t == "response.audio_transcript.delta":
-                        yield {"type": "transcript", "text": msg.get("delta", ""), "is_final": False}
+                    if t == "response.output_audio.delta":
+                        yield {
+                            "type": "audio_b64",
+                            "data": msg.get("delta", ""),
+                            "sample_rate": 24000,
+                        }
+                    elif t == "response.output_audio_transcript.delta":
+                        yield {
+                            "type": "transcript",
+                            "text": msg.get("delta", ""),
+                            "is_final": False,
+                        }
                     elif t == "response.done":
                         elapsed = time.perf_counter() - t0
                         yield {
@@ -162,6 +182,11 @@ class OpenAIRealtimeTranslateAdapter:
                             "latency_ms": elapsed * 1000,
                             "cost_usd": elapsed / 60.0 * (self.cost_per_call_estimate_usd or 0.034),
                         }
-                        break
-
-            pcm_buf = bytearray()
+                        t0 = time.perf_counter()
+                    elif t == "error":
+                        log.warning("translate: openai error: %s",
+                                    json.dumps(msg.get("error", {}))[:300])
+            finally:
+                sender_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await sender_task
