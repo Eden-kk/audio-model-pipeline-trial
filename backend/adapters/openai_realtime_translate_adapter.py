@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import numpy as np
 from scipy.signal import resample_poly  # type: ignore[import]
+import websockets  # type: ignore[import]
 
 log = logging.getLogger("trial-app.openai_realtime_translate")
 
@@ -79,8 +80,6 @@ class OpenAIRealtimeTranslateAdapter:
         context_iter: Optional[AsyncIterator[Any]] = None,  # not used; translation is stateless
         abort_event: Optional[Any] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        import websockets  # type: ignore[import]
-
         source_language = config.get("source_language", "auto")
         target_language = config.get("target_language", "en")
         voice = config.get("voice", "alloy")

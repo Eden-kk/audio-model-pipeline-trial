@@ -1,7 +1,8 @@
 """OpenAI Realtime 2 adapter — GPT-5-class bidirectional voice AI.
 
-Persistent WSS session with while-True multi-turn loop. abort_event handled
-by receiver (not sender). Env: OPENAI_API_KEY
+Uses OpenAI's GA Realtime API (no `OpenAI-Beta` header). Persistent WSS
+session with while-True multi-turn loop. abort_event handled by receiver
+(not sender). Env: OPENAI_API_KEY
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import numpy as np
 from scipy.signal import resample_poly  # type: ignore[import]
+import websockets  # type: ignore[import]
 
 log = logging.getLogger("trial-app.openai_realtime_2")
 
@@ -46,7 +48,7 @@ class OpenAIRealtime2Adapter:
                 "type": "string",
                 "default": "medium",
                 "enum": ["minimal", "low", "medium", "high", "xhigh"],
-                "description": "Sent per response.create, not in session.update",
+                "description": "GA: sent as response.reasoning.effort, not in session.update",
             },
             "voice": {
                 "type": "string",
@@ -90,8 +92,6 @@ class OpenAIRealtime2Adapter:
         context_iter: Optional[AsyncIterator[Any]] = None,
         abort_event: Optional[Any] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
-        import websockets  # type: ignore[import]
-
         system_prompt = config.get(
             "system_prompt",
             "You are a helpful AR-glasses voice assistant. Reply concisely.",
@@ -103,44 +103,55 @@ class OpenAIRealtime2Adapter:
         model = config.get("model", "gpt-realtime-2")
         api_key = self._api_key()
 
-        modalities = ["audio", "text"] if generate_audio else ["text"]
+        # GA only supports a single output modality per response: ['audio'] or ['text'].
+        output_modalities = ["audio"] if generate_audio else ["text"]
 
         async with websockets.connect(
             _WS_URL.format(model=model),
-            additional_headers={
-                "Authorization": f"Bearer {api_key}",
-                "OpenAI-Beta": "realtime=v1",
-            },
+            additional_headers={"Authorization": f"Bearer {api_key}"},
             ping_interval=20,
         ) as ws:
             await ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
+                    "type": "realtime",
                     "instructions": system_prompt,
-                    "voice": voice,
                     "max_output_tokens": max_new_tokens,
-                    "modalities": modalities,
-                    "input_audio_transcription": {"model": "whisper-1"},
-                    "turn_detection": {"type": None},
+                    "output_modalities": output_modalities,
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "transcription": {"model": "whisper-1"},
+                            "turn_detection": None,
+                        },
+                        "output": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "voice": voice,
+                        },
+                    },
                 },
             }))
 
-            if context_iter is not None:
-                parts: List[str] = []
-                async for chunk in context_iter:
-                    parts.append(str(chunk))
-                if parts:
-                    context_text = "".join(parts)
-                    await ws.send(json.dumps({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "system",
-                            "content": [{"type": "input_text", "text": context_text}],
-                        },
-                    }))
-
             t0 = time.perf_counter()
+
+            async def _context_drainer() -> None:
+                if context_iter is None:
+                    return
+                async for chunk in context_iter:
+                    line = str(chunk).strip()
+                    if not line:
+                        continue
+                    try:
+                        await ws.send(json.dumps({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "system",
+                                "content": [{"type": "input_text", "text": line}],
+                            },
+                        }))
+                    except websockets.exceptions.ConnectionClosed:
+                        return
 
             async def _sender() -> None:
                 async for frame in media_iter:
@@ -164,13 +175,14 @@ class OpenAIRealtime2Adapter:
                         await ws.send(json.dumps({
                             "type": "response.create",
                             "response": {
-                                "reasoning_effort": reasoning_effort,
-                                "modalities": modalities,
+                                "reasoning": {"effort": reasoning_effort},
+                                "output_modalities": output_modalities,
                             },
                         }))
                     # unknown/video frames: silently skip (forward-compat)
 
             sender_task = asyncio.create_task(_sender(), name="openai-realtime-2-sender")
+            context_task = asyncio.create_task(_context_drainer(), name="openai-realtime-2-context")
             try:
                 while True:
                     if abort_event is not None and abort_event.is_set():
@@ -190,9 +202,10 @@ class OpenAIRealtime2Adapter:
                             "text": msg.get("delta", ""),
                             "is_final": False,
                         }
-                    elif t == "response.text.delta":
+                    elif t in ("response.output_text.delta",
+                               "response.output_audio_transcript.delta"):
                         yield {"type": "text_delta", "text": msg.get("delta", "")}
-                    elif t == "response.audio.delta":
+                    elif t == "response.output_audio.delta":
                         yield {
                             "type": "audio_b64",
                             "data": msg.get("delta", ""),
@@ -219,5 +232,8 @@ class OpenAIRealtime2Adapter:
                         t0 = time.perf_counter()
             finally:
                 sender_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                context_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
                     await sender_task
+                with contextlib.suppress(asyncio.CancelledError):
+                    await context_task

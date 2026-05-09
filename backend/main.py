@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import io
+import json
 import os
+import tempfile
 import time
+import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -231,9 +235,8 @@ async def upload_clip(
             pass
         # Re-write manifest with the metadata filled in.
         from storage.clips import _clip_dir   # type: ignore
-        import json as _json
         (_clip_dir(clip_id) / "manifest.json").write_text(
-            _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+            json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
         )
     return ClipOut(**clip.to_dict())
 
@@ -264,7 +267,6 @@ async def update_clip(clip_id: str, patch: ClipPatch):
     used by the Corpus page chip tagger and the ingest auto-tagger.
     Other fields (id / format / duration_s / etc.) are immutable
     post-ingest by design."""
-    import json as _json
     from storage.clips import _clip_dir   # type: ignore
     clip = get_clip(clip_id)
     if not clip:
@@ -284,7 +286,7 @@ async def update_clip(clip_id: str, patch: ClipPatch):
     if patch.captured_transcript_segments is not None:
         clip.captured_transcript_segments = list(patch.captured_transcript_segments)
     (_clip_dir(clip_id) / "manifest.json").write_text(
-        _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+        json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
     )
     return ClipOut(**clip.to_dict())
 
@@ -331,7 +333,6 @@ async def autotag_clip_endpoint(clip_id: str, opts: AutoTagOptions | None = None
     feature values + per-tag evidence so the UI can show "why"."""
     from pipelines.auto_tagger import autotag_clip
     from storage.clips import _clip_dir   # type: ignore
-    import json as _json
 
     clip = get_clip(clip_id)
     if not clip:
@@ -358,7 +359,7 @@ async def autotag_clip_endpoint(clip_id: str, opts: AutoTagOptions | None = None
         clip.scenarios = list(dict.fromkeys([*clip.scenarios, *detected]))
 
     (_clip_dir(clip_id) / "manifest.json").write_text(
-        _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+        json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
     )
     return AutoTagResult(
         clip_id=clip_id,
@@ -386,7 +387,6 @@ async def autotag_all_clips(opts: AutoTagOptions | None = None):
     UI can flag them."""
     from pipelines.auto_tagger import autotag_clip
     from storage.clips import _clip_dir, list_clips   # type: ignore
-    import json as _json
 
     options = opts or AutoTagOptions()
     clips = list_clips()
@@ -416,7 +416,7 @@ async def autotag_all_clips(opts: AutoTagOptions | None = None):
             clip.scenarios = list(dict.fromkeys([*clip.scenarios, *detected]))
 
         (_clip_dir(clip.id) / "manifest.json").write_text(
-            _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+            json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
         )
         results.append({
             "clip_id": clip.id,
@@ -588,13 +588,12 @@ async def enroll_wearer(
 @app.get("/api/enroll", response_model=Dict[str, Any])
 async def list_enrollments():
     """List enrolled profiles. Reads data/enrollments/*.json metadata."""
-    import json as _json
     out = []
     d = _enrollments_dir()
     if d.exists():
         for f in sorted(d.glob("*.json")):
             try:
-                rec = _json.loads(f.read_text(encoding="utf-8"))
+                rec = json.loads(f.read_text(encoding="utf-8"))
                 out.append({
                     "profile_id": rec["profile_id"],
                     "adapter": rec["adapter"],
@@ -709,12 +708,11 @@ async def get_enrollment_embedding(profile_id: str):
     """Return the raw embedding_b64 for a profile — used by the slow-loop
     speaker_tag stage to feed verify_segments() without round-tripping
     through the client."""
-    import json as _json
     p = _enrollments_dir() / f"{profile_id}.json"
     if not p.exists():
         raise HTTPException(status_code=404,
                             detail=f"profile {profile_id!r} not enrolled")
-    rec = _json.loads(p.read_text(encoding="utf-8"))
+    rec = json.loads(p.read_text(encoding="utf-8"))
     return {
         "profile_id": rec["profile_id"],
         "adapter": rec["adapter"],
@@ -1083,7 +1081,6 @@ async def _save_streamed_clip(
     # Wrap PCM s16le in a WAV header — soundfile is already a backend dep.
     import io
     import wave
-    import json as _json
     wav_io = io.BytesIO()
     with wave.open(wav_io, "wb") as wf:
         wf.setnchannels(1)
@@ -1155,7 +1152,7 @@ async def _save_streamed_clip(
         # Re-write manifest with metadata + tags.
         from storage.clips import _clip_dir   # type: ignore
         (_clip_dir(clip_id) / "manifest.json").write_text(
-            _json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
+            json.dumps(clip.to_dict(), indent=2), encoding="utf-8"
         )
     return clip_id
 
@@ -1302,7 +1299,7 @@ async def ws_mic(
     elif adapter in ("speechmatics",):
         await _proxy_speechmatics_mic(websocket, sample_rate, adapter_obj,
                                       save_to_corpus=save_to_corpus)
-    elif adapter in ("faster_whisper", "groq_whisper"):
+    elif adapter in ("faster_whisper", "groq_whisper", "openai_realtime_whisper"):
         await _proxy_chunked_batch_mic(websocket, sample_rate, adapter_obj,
                                        save_to_corpus=save_to_corpus)
     else:
@@ -1327,7 +1324,6 @@ async def _proxy_deepgram_mic(
     frame into a buffer and persist it as a corpus clip on stop (Plan D
     Stage A3). Audio-only for now; A4 plumbs the transcript through.
     """
-    import json as _json
     import websockets as wslib
 
     api_key = os.environ.get("DEEPGRAM_API_KEY", "")
@@ -1363,7 +1359,6 @@ async def _proxy_deepgram_mic(
     # clip as a ground-truth seed for the AR-glass benchmark.
     transcript_segments: list = []
     partial_count = 0
-    stopped = False
 
     try:
         async with wslib.connect(
@@ -1379,11 +1374,9 @@ async def _proxy_deepgram_mic(
 
             async def client_to_vendor() -> None:
                 """Pump bytes from browser → Deepgram, until client says stop."""
-                nonlocal stopped
                 while True:
                     msg = await client_ws.receive()
                     if msg.get("type") == "websocket.disconnect":
-                        stopped = True
                         return
                     if "bytes" in msg and msg["bytes"]:
                         await vendor_ws.send(msg["bytes"])
@@ -1391,12 +1384,11 @@ async def _proxy_deepgram_mic(
                             pcm_buf.extend(msg["bytes"])
                     elif "text" in msg and msg["text"]:
                         try:
-                            ctrl = _json.loads(msg["text"])
+                            ctrl = json.loads(msg["text"])
                         except Exception:
                             continue
                         if ctrl.get("type") == "stop":
-                            stopped = True
-                            await vendor_ws.send(_json.dumps({"type": "CloseStream"}))
+                            await vendor_ws.send(json.dumps({"type": "CloseStream"}))
                             return
 
             async def vendor_to_client() -> None:
@@ -1405,8 +1397,8 @@ async def _proxy_deepgram_mic(
                     if isinstance(raw, bytes):
                         continue
                     try:
-                        msg = _json.loads(raw)
-                    except _json.JSONDecodeError:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
                         continue
                     if msg.get("type") != "Results":
                         continue
@@ -1455,7 +1447,7 @@ async def _proxy_deepgram_mic(
 
             send_task = asyncio.create_task(client_to_vendor())
             recv_task = asyncio.create_task(vendor_to_client())
-            done, pending = await asyncio.wait(
+            _, pending = await asyncio.wait(
                 {send_task, recv_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -1496,7 +1488,7 @@ async def _proxy_deepgram_mic(
                         "clip_id": clip_id,
                     })
             except Exception as e:
-                logging.getLogger(__name__).warning(
+                log.warning(
                     "deepgram mic save failed: %s", e
                 )
     except Exception as exc:
@@ -1523,7 +1515,6 @@ async def _proxy_assemblyai_mic(
     When ``save_to_corpus`` is True we accumulate PCM and persist as a clip
     on stop (Plan D Stage A3).
     """
-    import json as _json
     import websockets as wslib
 
     api_key = os.environ.get("ASSEMBLYAI_API_KEY", "")
@@ -1577,11 +1568,11 @@ async def _proxy_assemblyai_mic(
                             pcm_buf.extend(msg["bytes"])
                     elif "text" in msg and msg["text"]:
                         try:
-                            ctrl = _json.loads(msg["text"])
+                            ctrl = json.loads(msg["text"])
                         except Exception:
                             continue
                         if ctrl.get("type") == "stop":
-                            await vendor_ws.send(_json.dumps({"type": "Terminate"}))
+                            await vendor_ws.send(json.dumps({"type": "Terminate"}))
                             return
 
             async def vendor_to_client() -> None:
@@ -1590,8 +1581,8 @@ async def _proxy_assemblyai_mic(
                     if isinstance(raw, bytes):
                         continue
                     try:
-                        msg = _json.loads(raw)
-                    except _json.JSONDecodeError:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
                         continue
                     mtype = msg.get("type")
                     if mtype in ("Begin",):
@@ -1641,7 +1632,7 @@ async def _proxy_assemblyai_mic(
 
             send_task = asyncio.create_task(client_to_vendor())
             recv_task = asyncio.create_task(vendor_to_client())
-            done, pending = await asyncio.wait(
+            _, pending = await asyncio.wait(
                 {send_task, recv_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -1681,7 +1672,7 @@ async def _proxy_assemblyai_mic(
                         "clip_id": clip_id,
                     })
             except Exception as e:
-                logging.getLogger(__name__).warning(
+                log.warning(
                     "assemblyai mic save failed: %s", e
                 )
     except Exception as exc:
@@ -1693,6 +1684,30 @@ async def _proxy_assemblyai_mic(
     finally:
         try: await client_ws.close()
         except Exception: pass
+
+
+async def _transcribe_pcm_buffer(
+    buf: bytearray, sample_rate: int, adapter_obj: Any
+) -> str:
+    if len(buf) < sample_rate * 2 * 0.1:
+        return ""
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(bytes(buf))
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(wav_io.getvalue())
+        tmp_path = tmp.name
+    try:
+        result = await adapter_obj.transcribe(tmp_path, {})
+        return result.get("text", "") or ""
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 async def _proxy_nemo_mic(
@@ -1714,10 +1729,6 @@ async def _proxy_nemo_mic(
       binary frames  = raw s16le PCM at `sample_rate` Hz, mono
       text frames    = JSON control: {"type": "stop"}
     """
-    import io
-    import json as _json
-    import tempfile
-    import wave
 
     CHUNK_INTERVAL_S = 1.5  # re-transcribe cadence
 
@@ -1737,30 +1748,6 @@ async def _proxy_nemo_mic(
         "adapter": adapter_id,
         "sample_rate": sample_rate,
     })
-
-    async def _transcribe_buf(buf: bytearray) -> str:
-        """Write buf to a temp WAV and POST to the model-server; return text."""
-        if len(buf) < sample_rate * 2 * 0.1:  # < 100 ms — skip
-            return ""
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(bytes(buf))
-        wav_bytes = wav_io.getvalue()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(wav_bytes)
-            tmp_path = tmp.name
-        try:
-            result = await adapter_obj.transcribe(tmp_path, {})
-            return result.get("text", "") or ""
-        finally:
-            try:
-                import os as _os
-                _os.unlink(tmp_path)
-            except OSError:
-                pass
 
     try:
         while True:
@@ -1782,7 +1769,7 @@ async def _proxy_nemo_mic(
                         pcm_corpus_buf.extend(chunk)
                 elif "text" in msg and msg["text"]:
                     try:
-                        ctrl = _json.loads(msg["text"])
+                        ctrl = json.loads(msg["text"])
                     except Exception:
                         ctrl = {}
                     if ctrl.get("type") == "stop":
@@ -1793,7 +1780,7 @@ async def _proxy_nemo_mic(
             if pcm_buf and (now - last_chunk_time) >= CHUNK_INTERVAL_S:
                 last_chunk_time = now
                 try:
-                    text = await _transcribe_buf(pcm_buf)
+                    text = await _transcribe_pcm_buffer(pcm_buf, sample_rate, adapter_obj)
                     if text:
                         latest_text = text
                 except Exception:
@@ -1809,7 +1796,7 @@ async def _proxy_nemo_mic(
         full_text = ""
         if pcm_buf:
             try:
-                full_text = await _transcribe_buf(pcm_buf) or latest_text
+                full_text = await _transcribe_pcm_buffer(pcm_buf, sample_rate, adapter_obj) or latest_text
             except Exception as e:
                 full_text = latest_text
                 log.warning("nemo mic final transcribe failed: %s", e)
@@ -1872,7 +1859,6 @@ async def _proxy_gladia_mic(
     as binary messages. The server emits JSON with ``event`` "transcript" carrying
     ``type`` "final" or "partial".
     """
-    import json as _json
     import websockets as wslib
 
     api_key = os.environ.get("GLADIA_API_KEY", "")
@@ -1899,7 +1885,7 @@ async def _proxy_gladia_mic(
             max_size=None,
         ) as vendor_ws:
             # Gladia live requires a JSON session-init frame first
-            await vendor_ws.send(_json.dumps({
+            await vendor_ws.send(json.dumps({
                 "x_gladia_key": api_key,
                 "encoding": "wav/pcm",
                 "sample_rate": sample_rate,
@@ -1925,11 +1911,11 @@ async def _proxy_gladia_mic(
                             pcm_buf.extend(msg["bytes"])
                     elif "text" in msg and msg["text"]:
                         try:
-                            ctrl = _json.loads(msg["text"])
+                            ctrl = json.loads(msg["text"])
                         except Exception:
                             continue
                         if ctrl.get("type") == "stop":
-                            await vendor_ws.send(_json.dumps({"type": "stop_recording"}))
+                            await vendor_ws.send(json.dumps({"type": "stop_recording"}))
                             return
 
             async def vendor_to_client() -> None:
@@ -1938,8 +1924,8 @@ async def _proxy_gladia_mic(
                     if isinstance(raw, bytes):
                         continue
                     try:
-                        msg = _json.loads(raw)
-                    except _json.JSONDecodeError:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
                         continue
                     # Gladia live emits {"event": "transcript", "type": "final"|"partial", ...}
                     if msg.get("event") != "transcript":
@@ -1963,7 +1949,7 @@ async def _proxy_gladia_mic(
 
             send_task = asyncio.create_task(client_to_vendor())
             recv_task = asyncio.create_task(vendor_to_client())
-            done, pending = await asyncio.wait(
+            _, pending = await asyncio.wait(
                 {send_task, recv_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -2028,7 +2014,6 @@ async def _proxy_speechmatics_mic(
     Session requires a StartRecognition JSON frame, then binary audio chunks.
     Server emits AddPartialTranscript and AddTranscript (final) JSON events.
     """
-    import json as _json
     import websockets as wslib
 
     api_key = os.environ.get("SPEECHMATICS_API_KEY", "")
@@ -2056,7 +2041,7 @@ async def _proxy_speechmatics_mic(
             max_size=None,
         ) as vendor_ws:
             # Speechmatics RT requires StartRecognition as the first message
-            await vendor_ws.send(_json.dumps({
+            await vendor_ws.send(json.dumps({
                 "message": "StartRecognition",
                 "audio_format": {
                     "type": "raw",
@@ -2073,7 +2058,7 @@ async def _proxy_speechmatics_mic(
             # Wait for RecognitionStarted acknowledgement
             ack_raw = await vendor_ws.recv()
             try:
-                ack = _json.loads(ack_raw)
+                ack = json.loads(ack_raw)
                 if ack.get("message") == "Error":
                     await client_ws.send_json({
                         "event": "StageFailed",
@@ -2082,7 +2067,7 @@ async def _proxy_speechmatics_mic(
                     })
                     await client_ws.close()
                     return
-            except _json.JSONDecodeError:
+            except json.JSONDecodeError:
                 pass
 
             await client_ws.send_json({
@@ -2102,11 +2087,11 @@ async def _proxy_speechmatics_mic(
                             pcm_buf.extend(msg["bytes"])
                     elif "text" in msg and msg["text"]:
                         try:
-                            ctrl = _json.loads(msg["text"])
+                            ctrl = json.loads(msg["text"])
                         except Exception:
                             continue
                         if ctrl.get("type") == "stop":
-                            await vendor_ws.send(_json.dumps({"message": "EndOfStream",
+                            await vendor_ws.send(json.dumps({"message": "EndOfStream",
                                                               "last_seq_no": 0}))
                             return
 
@@ -2116,8 +2101,8 @@ async def _proxy_speechmatics_mic(
                     if isinstance(raw, bytes):
                         continue
                     try:
-                        msg = _json.loads(raw)
-                    except _json.JSONDecodeError:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
                         continue
                     mtype = msg.get("message", "")
                     if mtype == "EndOfTranscript":
@@ -2164,7 +2149,7 @@ async def _proxy_speechmatics_mic(
 
             send_task = asyncio.create_task(client_to_vendor())
             recv_task = asyncio.create_task(vendor_to_client())
-            done, pending = await asyncio.wait(
+            _, pending = await asyncio.wait(
                 {send_task, recv_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -2233,10 +2218,6 @@ async def _proxy_chunked_batch_mic(
     and a string .id attribute. Used by faster_whisper (local) and groq_whisper
     (cloud REST).
     """
-    import io
-    import json as _json
-    import tempfile
-    import wave
 
     CHUNK_INTERVAL_S = 0.8
 
@@ -2267,29 +2248,6 @@ async def _proxy_chunked_batch_mic(
         "sample_rate": sample_rate,
     })
 
-    async def _transcribe_buf(buf: bytearray) -> str:
-        if len(buf) < sample_rate * 2 * 0.1:
-            return ""
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(bytes(buf))
-        wav_bytes = wav_io.getvalue()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(wav_bytes)
-            tmp_path = tmp.name
-        try:
-            result = await adapter_obj.transcribe(tmp_path, {})
-            return result.get("text", "") or ""
-        finally:
-            try:
-                import os as _os
-                _os.unlink(tmp_path)
-            except OSError:
-                pass
-
     try:
         while True:
             now = time.perf_counter()
@@ -2310,7 +2268,7 @@ async def _proxy_chunked_batch_mic(
                         pcm_corpus_buf.extend(chunk)
                 elif "text" in msg and msg["text"]:
                     try:
-                        ctrl = _json.loads(msg["text"])
+                        ctrl = json.loads(msg["text"])
                     except Exception:
                         ctrl = {}
                     if ctrl.get("type") == "stop":
@@ -2320,7 +2278,7 @@ async def _proxy_chunked_batch_mic(
             if pcm_buf and (now - last_chunk_time) >= CHUNK_INTERVAL_S:
                 last_chunk_time = now
                 try:
-                    text = await _transcribe_buf(pcm_buf)
+                    text = await _transcribe_pcm_buffer(pcm_buf, sample_rate, adapter_obj)
                     if text:
                         latest_text = text
                 except Exception:
@@ -2335,7 +2293,7 @@ async def _proxy_chunked_batch_mic(
         full_text = ""
         if pcm_buf:
             try:
-                full_text = await _transcribe_buf(pcm_buf) or latest_text
+                full_text = await _transcribe_pcm_buffer(pcm_buf, sample_rate, adapter_obj) or latest_text
             except Exception as e:
                 full_text = latest_text
                 log.warning("%s mic final transcribe failed: %s", adapter_id, e)

@@ -23,6 +23,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import numpy as np
 import soundfile as sf
+import websockets  # type: ignore[import]
 
 log = logging.getLogger("trial-app.openai_realtime_whisper")
 
@@ -57,14 +58,21 @@ class OpenAIRealtimeWhisperAdapter:
                 "default": "auto",
                 "description": "BCP-47 code or 'auto'",
             },
-            "latency_preference": {
-                "type": "string",
-                "default": "balanced",
-                "enum": ["low", "balanced", "accurate"],
-            },
             "model": {
                 "type": "string",
-                "default": "gpt-4o-realtime-preview",
+                "default": "gpt-realtime-mini",
+                "description": "WSS-connection realtime carrier (GA endpoint)",
+            },
+            "transcription_model": {
+                "type": "string",
+                "default": "gpt-realtime-whisper",
+                "enum": [
+                    "gpt-realtime-whisper",
+                    "gpt-4o-transcribe",
+                    "gpt-4o-mini-transcribe",
+                    "whisper-1",
+                ],
+                "description": "ASR model used for input_audio_transcription",
             },
             "timeout_s": {
                 "type": "number",
@@ -85,6 +93,24 @@ class OpenAIRealtimeWhisperAdapter:
             raise RuntimeError("OPENAI_API_KEY not set")
         return key
 
+    def _session_update(self, transcription_model: str) -> dict:
+        return {
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {"model": transcription_model},
+                        "turn_detection": None,
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcm", "rate": 24000},
+                    },
+                },
+            },
+        }
+
     def _resample_to_24k(self, pcm: np.ndarray, src_sr: int) -> np.ndarray:
         if src_sr == 24000:
             return pcm
@@ -95,10 +121,9 @@ class OpenAIRealtimeWhisperAdapter:
 
     async def transcribe(self, audio_path: str, config: dict) -> dict:
         """Run ASR via OpenAI Realtime WSS and return a normalised result dict."""
-        import websockets  # type: ignore[import]
-
         language = config.get("language", "auto")
-        model = config.get("model", "gpt-4o-realtime-preview")
+        model = config.get("model", "gpt-realtime-mini")
+        transcription_model = config.get("transcription_model", "gpt-realtime-whisper")
         timeout_s = float(config.get("timeout_s", 30.0))
         api_key = self._api_key()
 
@@ -113,19 +138,10 @@ class OpenAIRealtimeWhisperAdapter:
 
         async with websockets.connect(
             _WS_URL.format(model=model),
-            additional_headers={
-                "Authorization": f"Bearer {api_key}",
-                "OpenAI-Beta": "realtime=v1",
-            },
+            additional_headers={"Authorization": f"Bearer {api_key}"},
             ping_interval=20,
         ) as ws:
-            await ws.send(json.dumps({
-                "type": "session.update",
-                "session": {
-                    "input_audio_transcription": {"model": model},
-                    "turn_detection": None,
-                },
-            }))
+            await ws.send(json.dumps(self._session_update(transcription_model)))
 
             for i in range(0, len(pcm_bytes), _CHUNK):
                 chunk = pcm_bytes[i: i + _CHUNK]
@@ -135,7 +151,6 @@ class OpenAIRealtimeWhisperAdapter:
                 }))
 
             await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-            await ws.send(json.dumps({"type": "response.create"}))  # required
 
             async def _receive():
                 full_text = ""
@@ -150,7 +165,6 @@ class OpenAIRealtimeWhisperAdapter:
                         full_text += msg.get("delta", "")
                     elif t == "conversation.item.input_audio_transcription.completed":
                         full_text = msg.get("transcript", full_text)
-                    elif t == "response.done":
                         raw_done = msg
                         break
                 return full_text, raw_done
@@ -171,10 +185,9 @@ class OpenAIRealtimeWhisperAdapter:
     async def transcribe_stream(
         self, audio_path: str, config: dict
     ) -> AsyncIterator[Dict[str, Any]]:
-        import websockets  # type: ignore[import]
-
         language = config.get("language", "auto")
-        model = config.get("model", "gpt-4o-realtime-preview")
+        model = config.get("model", "gpt-realtime-mini")
+        transcription_model = config.get("transcription_model", "gpt-realtime-whisper")
         api_key = self._api_key()
 
         data, sr = sf.read(audio_path, dtype="int16", always_2d=False)
@@ -189,19 +202,10 @@ class OpenAIRealtimeWhisperAdapter:
 
         async with websockets.connect(
             _WS_URL.format(model=model),
-            additional_headers={
-                "Authorization": f"Bearer {api_key}",
-                "OpenAI-Beta": "realtime=v1",
-            },
+            additional_headers={"Authorization": f"Bearer {api_key}"},
             ping_interval=20,
         ) as ws:
-            await ws.send(json.dumps({
-                "type": "session.update",
-                "session": {
-                    "input_audio_transcription": {"model": model},
-                    "turn_detection": None,
-                },
-            }))
+            await ws.send(json.dumps(self._session_update(transcription_model)))
 
             for i in range(0, len(pcm_bytes), _CHUNK):
                 chunk = pcm_bytes[i: i + _CHUNK]
@@ -211,7 +215,6 @@ class OpenAIRealtimeWhisperAdapter:
                 }))
 
             await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-            await ws.send(json.dumps({"type": "response.create"}))  # required
 
             async for raw in ws:
                 try:
@@ -224,7 +227,6 @@ class OpenAIRealtimeWhisperAdapter:
                     yield {"partial_text": full_text, "is_final": False}
                 elif t == "conversation.item.input_audio_transcription.completed":
                     full_text = msg.get("transcript", full_text)
-                elif t == "response.done":
                     break
 
         wall_s = time.perf_counter() - t0
