@@ -57,9 +57,13 @@ class OpenAIRealtime2Adapter:
             },
             "max_new_tokens": {
                 "type": "integer",
-                "default": 256,
+                "default": 4096,
                 "minimum": 16,
-                "maximum": 2048,
+                "maximum": 8192,
+                "description": (
+                    "Max output tokens per response. ~256 ≈ 1 min of audio; "
+                    "default 4096 leaves room for multi-paragraph spoken replies."
+                ),
             },
             "generate_audio": {
                 "type": "boolean",
@@ -98,7 +102,7 @@ class OpenAIRealtime2Adapter:
         )
         reasoning_effort = config.get("reasoning_effort", "medium")
         voice = config.get("voice", "alloy")
-        max_new_tokens = int(config.get("max_new_tokens", 256))
+        max_new_tokens = int(config.get("max_new_tokens", 4096))
         generate_audio = bool(config.get("generate_audio", True))
         model = config.get("model", "gpt-realtime-2")
         api_key = self._api_key()

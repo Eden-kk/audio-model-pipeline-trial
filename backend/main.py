@@ -1214,7 +1214,7 @@ async def ws_omni(
     config: Dict[str, Any] = {
         "profile_id": profile_id,
         "generate_audio": _qp_bool("generate_audio", True),
-        "max_new_tokens": int(qp.get("max_new_tokens", 256)),
+        "max_new_tokens": int(qp.get("max_new_tokens", 4096)),
         "temperature": float(qp.get("temperature", 0.6)),
         # Slice 2 of the realtime-fixes plan. Default OFF — when set, the
         # MiniCPM-o adapter opens a persistent WS to /ws/omni-stream for
