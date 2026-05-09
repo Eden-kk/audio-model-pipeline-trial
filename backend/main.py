@@ -15,6 +15,7 @@ WS   /ws/run/{run_id}              — stream StageStarted/StagePartial/
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import io
 import json
@@ -2240,6 +2241,7 @@ async def _proxy_chunked_batch_mic(
     stopped = False
     last_chunk_time = time.perf_counter()
     latest_text = ""
+    inflight: Optional[asyncio.Task] = None
     t0 = time.perf_counter()
 
     await client_ws.send_json({
@@ -2275,20 +2277,35 @@ async def _proxy_chunked_batch_mic(
                         stopped = True
                         break
 
-            if pcm_buf and (now - last_chunk_time) >= CHUNK_INTERVAL_S:
+            # Non-blocking transcribe: only one in-flight call at a time. Slow
+            # adapters (OpenAI Realtime ~3s/call) used to block this loop and
+            # cause WS keepalive timeouts; now the receive path stays responsive
+            # while the transcribe runs in the background.
+            if inflight is None and pcm_buf and (now - last_chunk_time) >= CHUNK_INTERVAL_S:
                 last_chunk_time = now
+                inflight = asyncio.create_task(
+                    _transcribe_pcm_buffer(bytes(pcm_buf), sample_rate, adapter_obj)
+                )
+
+            if inflight is not None and inflight.done():
                 try:
-                    text = await _transcribe_pcm_buffer(pcm_buf, sample_rate, adapter_obj)
+                    text = inflight.result()
                     if text:
                         latest_text = text
                 except Exception:
                     pass
+                inflight = None
                 partial_count += 1
                 await client_ws.send_json({
                     "event": "StageProgress",
                     "partial_text": latest_text,
                     "partial_index": partial_count,
                 })
+
+        if inflight is not None and not inflight.done():
+            inflight.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await inflight
 
         full_text = ""
         if pcm_buf:
