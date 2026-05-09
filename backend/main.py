@@ -15,6 +15,7 @@ WS   /ws/run/{run_id}              — stream StageStarted/StagePartial/
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import datetime
 import io
@@ -1300,7 +1301,12 @@ async def ws_mic(
     elif adapter in ("speechmatics",):
         await _proxy_speechmatics_mic(websocket, sample_rate, adapter_obj,
                                       save_to_corpus=save_to_corpus)
-    elif adapter in ("faster_whisper", "groq_whisper", "openai_realtime_whisper"):
+    elif adapter == "openai_realtime_whisper":
+        await _proxy_openai_realtime_whisper_mic(
+            websocket, sample_rate, adapter_obj,
+            save_to_corpus=save_to_corpus, language=language,
+        )
+    elif adapter in ("faster_whisper", "groq_whisper"):
         await _proxy_chunked_batch_mic(websocket, sample_rate, adapter_obj,
                                        save_to_corpus=save_to_corpus)
     else:
@@ -2354,6 +2360,171 @@ async def _proxy_chunked_batch_mic(
             await client_ws.close()
         except Exception:
             pass
+
+
+async def _proxy_openai_realtime_whisper_mic(
+    client_ws: WebSocket,
+    sample_rate: int,
+    adapter_obj: Any,
+    *,
+    save_to_corpus: bool = False,
+    language: str = "auto",
+) -> None:
+    """Persistent-WSS streaming mic proxy for openai_realtime_whisper.
+
+    Opens ONE WSS to OpenAI for the whole mic session, forwards client
+    PCM as input_audio_buffer.append in real time, and streams
+    conversation.item.input_audio_transcription.delta events back to the
+    client as StageProgress. On stop, sends commit and waits for the
+    completed event.
+
+    This bypasses the chunked-batch proxy whose per-chunk WSS reconnect
+    pattern adds ~3s latency per partial — OpenAI's Realtime API streams
+    deltas natively over a single persistent connection.
+    """
+    import websockets as _wslib
+    import numpy as _np
+    from scipy.signal import resample_poly as _resample_poly
+
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        await client_ws.send_json({"event": "StageFailed",
+                                   "error": "OPENAI_API_KEY not set"})
+        await client_ws.close(); return
+
+    carrier_model = "gpt-realtime-mini"
+    transcription_model = "gpt-realtime-whisper"
+    pcm_corpus_buf = bytearray() if save_to_corpus else None
+    max_bytes = MAX_MIC_CAPTURE_SECONDS * sample_rate * 2
+
+    t0 = time.perf_counter()
+    full_text = ""
+    partial_count = 0
+
+    await client_ws.send_json({
+        "event": "StageStarted",
+        "adapter": "openai_realtime_whisper",
+        "sample_rate": sample_rate,
+    })
+
+    url = f"wss://api.openai.com/v1/realtime?model={carrier_model}"
+    try:
+        async with _wslib.connect(
+            url,
+            additional_headers={"Authorization": f"Bearer {api_key}"},
+            ping_interval=20,
+        ) as openai_ws:
+            await openai_ws.send(json.dumps({
+                "type": "session.update",
+                "session": {
+                    "type": "realtime",
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 24000},
+                            "transcription": {"model": transcription_model},
+                            "turn_detection": None,
+                        },
+                        "output": {"format": {"type": "audio/pcm", "rate": 24000}},
+                    },
+                },
+            }))
+
+            async def client_to_openai():
+                while True:
+                    msg = await client_ws.receive()
+                    if msg.get("type") == "websocket.disconnect":
+                        return "disconnect"
+                    if "bytes" in msg and msg["bytes"]:
+                        chunk = msg["bytes"]
+                        if pcm_corpus_buf is not None and len(pcm_corpus_buf) < max_bytes:
+                            pcm_corpus_buf.extend(chunk)
+                        pcm_16k = _np.frombuffer(chunk, dtype="int16")
+                        pcm_24k = _resample_poly(pcm_16k, 3, 2).astype("int16").tobytes()
+                        await openai_ws.send(json.dumps({
+                            "type": "input_audio_buffer.append",
+                            "audio": base64.b64encode(pcm_24k).decode(),
+                        }))
+                    elif "text" in msg and msg["text"]:
+                        try:
+                            ctrl = json.loads(msg["text"])
+                        except Exception:
+                            ctrl = {}
+                        if ctrl.get("type") == "stop":
+                            await openai_ws.send(json.dumps(
+                                {"type": "input_audio_buffer.commit"}))
+                            return "stop"
+
+            async def openai_to_client():
+                nonlocal full_text, partial_count
+                async for raw in openai_ws:
+                    try:
+                        m = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    t = m.get("type", "")
+                    if t == "conversation.item.input_audio_transcription.delta":
+                        full_text += m.get("delta", "")
+                        partial_count += 1
+                        await client_ws.send_json({
+                            "event": "StageProgress",
+                            "partial_text": full_text,
+                            "partial_index": partial_count,
+                        })
+                    elif t == "conversation.item.input_audio_transcription.completed":
+                        full_text = m.get("transcript", full_text)
+                        return
+                    elif t == "error":
+                        log.warning("whisper-mic: openai error: %s",
+                                    json.dumps(m.get("error", {}))[:300])
+
+            c2o = asyncio.create_task(client_to_openai(), name="whisper-c2o")
+            o2c = asyncio.create_task(openai_to_client(), name="whisper-o2c")
+            _, pending = await asyncio.wait({c2o, o2c}, return_when=asyncio.FIRST_COMPLETED)
+            # If client stopped/disconnected first, give OpenAI up to 10s to
+            # emit the completed event for the final transcript.
+            if c2o.done() and not o2c.done():
+                try:
+                    await asyncio.wait_for(o2c, timeout=10.0)
+                except asyncio.TimeoutError:
+                    pass
+            for t in pending:
+                t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t
+    except Exception as e:
+        log.warning("openai_realtime_whisper mic stream failed: %s: %s",
+                    type(e).__name__, e)
+
+    wall_s = time.perf_counter() - t0
+    await client_ws.send_json({
+        "event": "StageCompleted",
+        "adapter": "openai_realtime_whisper",
+        "latency_ms": wall_s * 1000.0,
+        "result": {
+            "text": full_text,
+            "words": [],
+            "language": language,
+            "wall_time_s": wall_s,
+        },
+        "is_streaming": True,
+    })
+
+    if pcm_corpus_buf is not None and len(pcm_corpus_buf) > 0:
+        try:
+            await _save_streamed_clip(
+                bytes(pcm_corpus_buf),
+                sample_rate=sample_rate,
+                vendor="openai_realtime_whisper",
+                transcript=full_text or None,
+                transcript_segments=[],
+            )
+        except Exception:
+            pass
+
+    try:
+        await client_ws.close()
+    except Exception:
+        pass
 
 
 # ─── Static frontend mount (production, MUST be last) ────────────────────────
