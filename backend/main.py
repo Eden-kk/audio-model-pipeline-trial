@@ -2561,5 +2561,17 @@ async def _proxy_openai_realtime_whisper_mic(
 _FRONTEND_DIST = Path(os.environ.get("FRONTEND_DIST", "/app/frontend_dist"))
 if _FRONTEND_DIST.is_dir():
     from fastapi.staticfiles import StaticFiles
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True),
+
+    class _NoCacheHTML(StaticFiles):
+        """StaticFiles that disables caching on index.html so hashed-asset
+        references can never go stale across rebuilds. The hashed JS/WASM
+        chunks themselves are still freely cacheable — their content hash
+        is the cache key."""
+        async def get_response(self, path, scope):
+            resp = await super().get_response(path, scope)
+            if path in ("", ".") or path.endswith(".html"):
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return resp
+
+    app.mount("/", _NoCacheHTML(directory=str(_FRONTEND_DIST), html=True),
               name="frontend")
